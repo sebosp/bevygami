@@ -19,6 +19,8 @@ browser.
 | 8. The dog face      | a traditional model, the first of many folders                  |
 | 9. The waterbomb base | the inside reverse fold                                        |
 | 10. The preliminary base | inside reverse folds from a triangle, the start of the crane |
+| 11. The bird base    | precreases, turning over, the petal fold (a collapse)            |
+| 12. The crane        | the orizuru: legs narrowed, neck and tail reversed, head, wings  |
 
 The traditional models and the preliminary base start white side up, so the color ends outside.
 
@@ -68,7 +70,18 @@ moving side joined to the moving point through the paper), and fold or fold-and-
 moving point can also be the top layer at a point of the folded model, and the line two points
 of the folded model, for the steps on many layers. Inside and outside reverse folds turn the two
 halves of a flap opposite ways and reverse the part of its spine that moves; a turn over mirrors
-the whole model and its layers. The faces
+the whole model and its layers.
+
+A **collapse** folds several creases at once, as the CP editors fold a crease pattern (the petal
+fold of the bird base): the step lists the creases that fold (mountain or valley from the front
+side) and the ones that open flat, every other crease keeps its state. The faces are placed by
+walking the paper from a face that stays and reflecting across every folded crease crossed; two
+ways around the paper that disagree make the step an error, so a wrong crease pattern cannot
+fold. The layers are stacked from the crease pattern: across a valley the front sides of the two
+faces face each other (the back sides across a mountain), the faces that moved in one piece keep
+their order (reversed when turned over), the rest by a hint. Each face moves from where it was to
+where it lands as a screw in 3D: a half turn around the axis of its reflection, or a turn in the
+plane lifted over the paper. The bird base checks flat-foldable at every vertex (tests). The faces
 are cut along the line, the moving ones reflected and restacked (on top for a valley, under for a
 mountain, their order reversed); in 3D the reflection is a half turn around the line, which is the
 animation. The creases are recorded mountain or valley as seen from the front side, as in ORIPA.
@@ -79,14 +92,13 @@ angles sum to π) at every inner vertex, the ground for the crease pattern lesso
 ## Roadmap
 
 1. **Now**: simple folds (valley, mountain, fold and unfold, flaps), inside and outside reverse
-   folds, turning over; the bases and models above.
-2. **Compound folds**: squash, petal and rabbit ear folds, swivel folds, for the bird base and the
-   crane. They fold several creases at once, where a face can turn about two lines in one step
-   (a petal fold): they need the collapse of the next point.
-3. **Folding from a crease pattern**: the flat folded shape from the CP by reflecting the faces
-   along a spanning tree (ORIPA's folded estimation), then the layer order by constraint solving
-   (the face-pair and the 3- and 4-face constraints of Jason Ku and of ORIPA). Then collapses of
-   multi-level pleats.
+   folds, turning over, collapses (the petal fold); the bases and models above, up to the crane.
+2. **Compound folds as collapses** (the petal fold is one): squash, rabbit ear and swivel folds,
+   sinks; the frog, the lily, the flapping bird.
+3. **Folding from a whole crease pattern**: the collapse already places the faces from the CP
+   (ORIPA's folded estimation); a full layer solver (the 3- and 4-face constraints of Jason Ku
+   and of ORIPA) for the layers the hint orders now. Then multi-level pleats collapsed from their
+   CP.
 4. **Design**: Robert J. Lang's tree method (*Origami Design Secrets*, TreeMaker) and box pleating
    on a grid (Box Pleating Studio): a stick figure in, a crease pattern out, folded in 3D.
 

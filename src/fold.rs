@@ -182,7 +182,7 @@ impl Paper {
 }
 
 /// How a fold line is found, from points of the paper (paper coordinates) or of the folded model.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Line {
     /// O1: the line through two points.
     Through(DVec2, DVec2),
@@ -210,7 +210,7 @@ impl Line {
 }
 
 /// The point that moves, which picks the side of the line that folds and the flap.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Grip {
     /// A point of the paper.
     Paper(DVec2),
@@ -225,7 +225,7 @@ impl From<DVec2> for Grip {
 }
 
 /// Which layers fold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
     /// Every layer on the moving side of the line.
     #[default]
@@ -236,7 +236,7 @@ pub enum Scope {
 }
 
 /// How the moving layers go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Style {
     /// All together, valley or mountain.
     #[default]
@@ -249,10 +249,33 @@ pub enum Style {
     OutsideReverse,
     /// The whole model turned over, left to right.
     TurnOver,
+    /// Several creases fold at once, see [`Collapse`].
+    Collapse,
+}
+
+/// A step where several creases fold at once (a petal fold, a squash, the collapse of a crease
+/// pattern), as the CP editors fold a crease pattern: the creases listed fold, the ones listed
+/// flat open, every other crease keeps its state; the faces are placed by walking the paper from
+/// the face at the grip, which stays, reflecting across each folded crease crossed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Collapse {
+    /// The creases that fold, in paper coordinates, mountain or valley seen from the front side
+    /// as in a crease pattern.
+    pub fold: &'static [(DVec2, DVec2, FoldKind)],
+    /// The creases that open flat.
+    pub flat: &'static [(DVec2, DVec2)],
+    /// The sheet mirrored by `x ↦ -x`, see [`Fold::mirrored`].
+    pub mirror: bool,
+}
+
+impl Collapse {
+    fn point(&self, p: DVec2) -> DVec2 {
+        if self.mirror { DVec2::new(-p.x, p.y) } else { p }
+    }
 }
 
 /// A step of a diagram.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fold {
     pub line: Line,
     pub moving: Grip,
@@ -261,6 +284,7 @@ pub struct Fold {
     pub style: Style,
     /// Fold and unfold: only a crease is left, a precrease.
     pub unfold: bool,
+    pub collapse: Option<Collapse>,
 }
 
 impl Fold {
@@ -272,6 +296,7 @@ impl Fold {
             scope: Scope::All,
             style: Style::Simple,
             unfold: false,
+            collapse: None,
         }
     }
 
@@ -331,10 +356,21 @@ impl Fold {
             Grip::Paper(p) => Grip::Paper(DVec2::new(-p.x, p.y)),
             top => top,
         };
+        let collapse = self.collapse.map(|c| Collapse { mirror: !c.mirror, ..c });
         Fold {
             line: self.line.mirrored(),
             moving,
+            collapse,
             ..self
+        }
+    }
+
+    /// A collapse, the face at `stays` does not move.
+    pub fn collapse(collapse: Collapse, stays: impl Into<Grip>) -> Fold {
+        Fold {
+            style: Style::Collapse,
+            collapse: Some(collapse),
+            ..Fold::valley(Line::Folded(DVec2::ZERO, DVec2::X), stays)
         }
     }
 }
@@ -347,6 +383,9 @@ pub enum FoldError {
     /// The moving point is on the fold line.
     MovingOnLine,
     NothingMoves,
+    /// The creases of a collapse do not fold flat: two ways around the paper put a face in two
+    /// places.
+    Inconsistent(DVec2),
 }
 
 /// A segment of the fold line on a face that stays, in paper coordinates.
@@ -500,6 +539,9 @@ pub fn shared_edges(f: &Face, g: &Face) -> Vec<(DVec2, DVec2)> {
 pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError> {
     if fold.style == Style::TurnOver {
         return Ok(turn_over(paper, fold));
+    }
+    if let Some(collapse) = fold.collapse {
+        return plan_collapse(paper, fold, collapse, step);
     }
     let (a, d) = locate(paper, fold.line)?;
     let side_of = |p: DVec2| cross(d, p - a);
@@ -769,6 +811,373 @@ fn turn_over(paper: &Paper, fold: Fold) -> Planned {
         landed,
         chords: Vec::new(),
     }
+}
+
+impl Pose {
+    pub fn inverse(&self) -> Pose {
+        let m = self.m.transpose();
+        Pose { m, t: -(m * self.t) }
+    }
+
+    pub fn close_to(&self, other: &Pose) -> bool {
+        (self.m - other.m).to_cols_array().iter().all(|x| x.abs() < 1e-6) && self.t.distance(other.t) < 1e-6
+    }
+}
+
+/// Cuts a face along a line of the paper (paper coordinates).
+fn split_paper(face: &Face, a: DVec2, d: DVec2) -> (Option<Face>, Option<Face>) {
+    let flat = Face {
+        pose: Pose::IDENTITY,
+        ..face.clone()
+    };
+    let (l, r) = split(&flat, a, d);
+    let restore = |f: Option<Face>| f.map(|f| Face { pose: face.pose, ..f });
+    (restore(l), restore(r))
+}
+
+/// The segment crosses the inside of the face (paper coordinates).
+fn crosses(face: &Face, a: DVec2, b: DVec2) -> bool {
+    let d = (b - a).normalize_or_zero();
+    let n = face.poly.len();
+    // The part of the segment inside the convex polygon.
+    let (mut lo, mut hi) = (0.0f64, a.distance(b));
+    for i in 0..n {
+        let (p, q) = (face.poly[i], face.poly[(i + 1) % n]);
+        let normal = cross(q - p, d);
+        let offset = cross(q - p, a - p);
+        if normal.abs() < 1e-12 {
+            if offset <= 1e-9 {
+                return false;
+            }
+        } else {
+            let t = -offset / normal;
+            if normal > 0.0 { lo = lo.max(t) } else { hi = hi.min(t) }
+        }
+    }
+    hi - lo > 1e-6
+}
+
+/// Convex images overlapping with some area: no separating axis among their edges.
+fn overlap(f: &[DVec2], g: &[DVec2]) -> bool {
+    for poly in [f, g] {
+        let n = poly.len();
+        for i in 0..n {
+            let e = poly[(i + 1) % n] - poly[i];
+            let axis = DVec2::new(-e.y, e.x).normalize_or_zero();
+            let span = |p: &[DVec2]| {
+                p.iter().fold((f64::MAX, f64::MIN), |(lo, hi), x| {
+                    let v = x.dot(axis);
+                    (lo.min(v), hi.max(v))
+                })
+            };
+            let (a, b) = (span(f), span(g));
+            if a.1 <= b.0 + 1e-6 || b.1 <= a.0 + 1e-6 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The stacking order of a folded state, as the CP editors find it from the crease pattern: two
+/// faces on both sides of a folded crease face each other with their front sides across a valley
+/// (back sides across a mountain), faces that moved together keep their order (reversed when
+/// turned over); `hint` orders the rest.
+/// Returns the layers, 0 at the bottom.
+fn stack(before: &Paper, after: &[Face], kinds: &dyn Fn(DVec2, DVec2) -> Option<FoldKind>, hint: &[i32]) -> Vec<i32> {
+    let n = after.len();
+    let images: Vec<Vec<DVec2>> = after.iter().map(|f| f.image()).collect();
+    let overlaps: Vec<Vec<bool>> = (0..n)
+        .map(|i| (0..n).map(|j| i != j && overlap(&images[i], &images[j])).collect())
+        .collect();
+    // The faces that moved together, joined through the paper: one rigid piece each.
+    let delta: Vec<Pose> = (0..n)
+        .map(|i| before.faces[i].pose.inverse().then(&after[i].pose))
+        .collect();
+    let mut piece: Vec<usize> = (0..n).collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..n {
+            for j in 0..n {
+                if piece[j] < piece[i]
+                    && delta[i].close_to(&delta[j])
+                    && !shared_edges(&before.faces[i], &before.faces[j]).is_empty()
+                {
+                    piece[i] = piece[j];
+                    changed = true;
+                }
+            }
+        }
+    }
+    // above[i][j]: i is over j.
+    let mut above = vec![vec![false; n]; n];
+    let set = |above: &mut Vec<Vec<bool>>, i: usize, j: usize| {
+        if !above[j][i] {
+            above[i][j] = true;
+        }
+    };
+    for i in 0..n {
+        for j in 0..n {
+            if !overlaps[i][j] {
+                continue;
+            }
+            let (f, g) = (&after[i], &after[j]);
+            // Across a folded crease.
+            if !f.pose.close_to(&g.pose) {
+                for (p, q) in shared_edges(f, g) {
+                    if let Some(kind) = kinds(p, q) {
+                        let front_up = !f.pose.flipped();
+                        let g_over = (kind == FoldKind::Valley) == front_up;
+                        if g_over {
+                            set(&mut above, j, i)
+                        } else {
+                            set(&mut above, i, j)
+                        }
+                    }
+                }
+            }
+            // Moved together, in one piece; their old order only means something where they
+            // already overlapped.
+            let delta_f = delta[i];
+            if piece[i] == piece[j] && overlap(&before.faces[i].image(), &before.faces[j].image()) {
+                let was_over = before.faces[i].layer > before.faces[j].layer;
+                let turned = delta_f.m.determinant() < 0.0;
+                if before.faces[i].layer != before.faces[j].layer && was_over != turned {
+                    set(&mut above, i, j);
+                }
+            }
+        }
+    }
+    // Bottom up: a face goes once every face it is over is placed; the hint picks among the
+    // ready ones, and breaks a cycle.
+    let mut placed = vec![false; n];
+    let mut layers = vec![0; n];
+    for layer in 0..n {
+        let ready = (0..n)
+            .filter(|i| !placed[*i])
+            .filter(|i| (0..n).all(|j| placed[j] || !above[*i][j]))
+            .min_by_key(|i| hint[*i])
+            .or_else(|| (0..n).filter(|i| !placed[*i]).min_by_key(|i| hint[*i]))
+            .expect("a face left");
+        placed[ready] = true;
+        layers[ready] = layer as i32;
+    }
+    layers
+}
+
+/// Works out a collapse, see [`Collapse`].
+fn plan_collapse(paper: &Paper, fold: Fold, collapse: Collapse, step: usize) -> Result<Planned, FoldError> {
+    let folds: Vec<(DVec2, DVec2, FoldKind)> = collapse
+        .fold
+        .iter()
+        .map(|(a, b, k)| (collapse.point(*a), collapse.point(*b), *k))
+        .collect();
+    let flats: Vec<(DVec2, DVec2)> = collapse
+        .flat
+        .iter()
+        .map(|(a, b)| (collapse.point(*a), collapse.point(*b)))
+        .collect();
+    // The faces cut along the creases that fold.
+    let mut faces = paper.faces.clone();
+    for (a, b, _) in &folds {
+        let d = (*b - *a).normalize_or_zero();
+        let mut cut = Vec::new();
+        for face in faces {
+            if crosses(&face, *a, *b) {
+                let (l, r) = split_paper(&face, *a, d);
+                cut.extend(l);
+                cut.extend(r);
+            } else {
+                cut.push(face);
+            }
+        }
+        faces = cut;
+    }
+    let before = Paper {
+        faces,
+        creases: paper.creases.clone(),
+    };
+    let n = before.faces.len();
+    // The hinges between faces: how the second face sits on the first, and the kind of a new fold.
+    let mut hinges: Vec<Vec<(usize, Pose, Option<FoldKind>)>> = vec![Vec::new(); n];
+    for (i, hinges_i) in hinges.iter_mut().enumerate() {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let (f, g) = (&before.faces[i], &before.faces[j]);
+            for (p, q) in shared_edges(f, g) {
+                let new_fold = folds.iter().find(|(a, b, _)| on_segment((*a, *b), p, q));
+                let opens = flats.iter().any(|(a, b)| on_segment((*a, *b), p, q));
+                let reflect = Pose::reflection(p, (q - p).normalize());
+                let relation = if let Some((_, _, kind)) = new_fold {
+                    // As the viewer sees it from the face that stays: past a valley the paper comes
+                    // to the front, past a mountain it goes to the back.
+                    let seen = if f.pose.flipped() { kind.opposite() } else { *kind };
+                    (reflect, Some(seen))
+                } else if opens || f.pose.close_to(&g.pose) {
+                    (Pose::IDENTITY, None)
+                } else {
+                    (reflect, None)
+                };
+                hinges_i.push((j, relation.0, relation.1));
+            }
+        }
+    }
+    // The walk from the face that stays.
+    let grip = match fold.moving {
+        // Already mirrored with the fold.
+        Grip::Paper(p) => p,
+        Grip::Top(q) => top_at(paper, q).ok_or(FoldError::PointOffPaper(q))?,
+    };
+    let root = before
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.contains(grip))
+        .max_by_key(|(_, f)| f.layer)
+        .map(|(i, _)| i)
+        .ok_or(FoldError::PointOffPaper(grip))?;
+    let mut poses: Vec<Option<Pose>> = vec![None; n];
+    // How far from the faces that stay, and toward the viewer or away.
+    let mut depth = vec![0usize; n];
+    let mut toward = vec![FoldKind::Valley; n];
+    poses[root] = Some(before.faces[root].pose);
+    let mut queue = std::collections::VecDeque::from([root]);
+    while let Some(i) = queue.pop_front() {
+        let pose = poses[i].expect("placed");
+        let moved = !pose.close_to(&before.faces[i].pose);
+        for (j, relation, kind) in hinges[i].clone() {
+            let placed = relation.then(&pose);
+            match poses[j] {
+                Some(p) if !p.close_to(&placed) => {
+                    return Err(FoldError::Inconsistent(before.faces[j].centroid()));
+                }
+                Some(_) => {}
+                None => {
+                    poses[j] = Some(placed);
+                    let j_moves = !placed.close_to(&before.faces[j].pose);
+                    if j_moves {
+                        depth[j] = if moved { depth[i] + 1 } else { 1 };
+                        toward[j] = if moved {
+                            toward[i]
+                        } else {
+                            kind.unwrap_or(FoldKind::Valley)
+                        };
+                    }
+                    queue.push_back(j);
+                }
+            }
+        }
+    }
+    let moving: Vec<bool> = (0..n)
+        .map(|i| poses[i].is_some_and(|p| !p.close_to(&before.faces[i].pose)))
+        .collect();
+    if !moving.iter().any(|m| *m) {
+        return Err(FoldError::NothingMoves);
+    }
+    // The layers: the faces that stay keep theirs; the ones that come to the front go on top, the
+    // nearest to the faces that stay highest (they cover what folds behind them), the ones that go
+    // to the back under everything, the nearest lowest.
+    let (lo, hi) = (
+        before.faces.iter().map(|f| f.layer).min().unwrap_or(0),
+        before.faces.iter().map(|f| f.layer).max().unwrap_or(0),
+    );
+    let max_depth = depth.iter().copied().max().unwrap_or(0) as i32 + 1;
+    let span = hi - lo + 1;
+    let mut landed = before.clone();
+    for (i, face) in landed.faces.iter_mut().enumerate() {
+        face.pose = poses[i].unwrap_or(face.pose);
+        let layer = face.layer - lo;
+        face.layer = if !moving[i] {
+            span * max_depth + layer
+        } else {
+            let d = depth[i] as i32;
+            match toward[i] {
+                FoldKind::Valley => span * (2 * max_depth - d + 1) + (span - 1 - layer),
+                FoldKind::Mountain => span * (d - 1) + (span - 1 - layer),
+            }
+        };
+    }
+    compact_layers(&mut landed);
+    let kinds = |p: DVec2, q: DVec2| {
+        folds
+            .iter()
+            .find(|(a, b, _)| on_segment((*a, *b), p, q))
+            .map(|(_, _, k)| *k)
+            .or_else(|| {
+                paper
+                    .creases
+                    .iter()
+                    .find(|c| on_segment((c.a, c.b), p, q))
+                    .map(|c| c.kind)
+            })
+    };
+    let hint: Vec<i32> = landed.faces.iter().map(|f| f.layer).collect();
+    let layers = stack(&before, &landed.faces, &kinds, &hint);
+    let top = layers.iter().copied().max().unwrap_or(0);
+    for (i, (face, layer)) in landed.faces.iter_mut().zip(layers).enumerate() {
+        face.layer = layer;
+        // The faces that end in the upper half of the stack come over the paper on their way.
+        toward[i] = if 2 * layer >= top {
+            FoldKind::Valley
+        } else {
+            FoldKind::Mountain
+        };
+    }
+    // The new creases, and the fold lines to draw: on every face edge along them.
+    let mut creases = paper.creases.clone();
+    for (a, b, kind) in &folds {
+        creases.retain(|c| !same_segment((c.a, c.b), (*a, *b)));
+        creases.push(Crease {
+            a: *a,
+            b: *b,
+            kind: *kind,
+            step,
+        });
+    }
+    let mut chords = Vec::new();
+    for (i, face) in before.faces.iter().enumerate() {
+        let edge_count = face.poly.len();
+        for e in 0..edge_count {
+            let (p, q) = (face.poly[e], face.poly[(e + 1) % edge_count]);
+            if let Some((_, _, kind)) = folds.iter().find(|(a, b, _)| on_segment((*a, *b), p, q)) {
+                chords.push(Chord {
+                    face: i,
+                    a: p,
+                    b: q,
+                    kind: *kind,
+                });
+            }
+        }
+    }
+    landed.creases = creases;
+    // The arrow follows the biggest face that moves.
+    let arrow = (0..n)
+        .filter(|i| moving[*i])
+        .max_by(|a, b| before.faces[*a].area().total_cmp(&before.faces[*b].area()))
+        .map(|i| before.faces[i].centroid())
+        .unwrap_or(grip);
+    let axis = folds
+        .first()
+        .map(|(a, b, _)| {
+            let pose = before.faces[before.face_at(*a).unwrap_or(root)].pose;
+            (pose.apply(*a), (pose.m * (*b - *a)).normalize_or_zero())
+        })
+        .unwrap_or((DVec2::ZERO, DVec2::X));
+    Ok(Planned {
+        fold,
+        turns: toward,
+        before,
+        moving,
+        grip: arrow,
+        axis,
+        side: DVec2::new(-axis.1.y, axis.1.x),
+        after: landed.clone(),
+        landed,
+        chords,
+    })
 }
 
 fn same_segment(p: (DVec2, DVec2), q: (DVec2, DVec2)) -> bool {

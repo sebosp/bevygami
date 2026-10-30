@@ -9,11 +9,11 @@ use std::f32::consts::{PI, TAU};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::color::Mix;
-use bevy::math::{Affine3A, DVec2};
+use bevy::math::{Affine3A, DMat2, DVec2};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::fold::{Face, FoldKind, Paper, shared_edges};
+use crate::fold::{Face, FoldKind, Paper, Style, shared_edges};
 use crate::session::{Session, SessionSystems};
 use crate::settings::Settings;
 use crate::theme::{self, ThemeMode, crease_on_paper, hex};
@@ -239,6 +239,12 @@ fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Que
         let mut affine = rest(face);
         if let Some(plan) = session.plan()
             && plan.moving[i]
+            && plan.fold.style == Style::Collapse
+            && session.t != 0.0
+        {
+            affine = collapse_motion(face, &plan.landed.faces[i], plan.turns[i], session.t);
+        } else if let Some(plan) = session.plan()
+            && plan.moving[i]
             && angle != 0.0
         {
             let (a, _) = plan.axis;
@@ -269,6 +275,50 @@ fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Que
             *transform = Transform::from_matrix(Mat4::from(*affine));
         }
     }
+}
+
+/// A face of a collapse on its way, `t` from 0 to 1: the isometry from where it was to where it
+/// lands, as a screw in 3D. A reflection is a half turn around its axis (a glide slides along it),
+/// a rotation turns in the plane, lifted over the paper on the way.
+fn collapse_motion(from: &Face, to: &Face, toward: FoldKind, t: f32) -> Affine3A {
+    let delta = from.pose.inverse().then(&to.pose);
+    let (z0, z1) = (from.layer as f32 * LAYER_GAP, to.layer as f32 * LAYER_GAP);
+    let side = if toward == FoldKind::Valley { 1.0 } else { -1.0 };
+    let screw = if delta.m.determinant() < 0.0 {
+        // The axis: the direction the reflection keeps, through half the offset across it.
+        let a = delta.m.x_axis.y.atan2(delta.m.x_axis.x) / 2.0;
+        let u = DVec2::new(a.cos(), a.sin());
+        let n = DVec2::new(-u.y, u.x);
+        let along = delta.t.dot(u) as f32;
+        let point = n * (delta.t.dot(n) / 2.0);
+        let point = Vec3::new(point.x as f32, point.y as f32, 0.0);
+        let u3 = Vec3::new(u.x as f32, u.y as f32, 0.0);
+        // The half turn goes over the paper toward the viewer, or under it.
+        let turn_axis = if u3.cross(Vec3::Z).dot(Vec3::new(n.x as f32, n.y as f32, 0.0)) > 0.0 {
+            u3
+        } else {
+            -u3
+        };
+        let z_fix = t * (z1 + z0);
+        Affine3A::from_translation(u3 * along * t + Vec3::Z * z_fix)
+            * Affine3A::from_translation(point)
+            * Affine3A::from_axis_angle(turn_axis, side * PI * t)
+            * Affine3A::from_translation(-point)
+    } else {
+        let angle = delta.m.x_axis.y.atan2(delta.m.x_axis.x);
+        let lift = Vec3::Z * ((z1 - z0) * t + side * 0.25 * (PI * t).sin());
+        if angle.abs() < 1e-9 {
+            Affine3A::from_translation(Vec3::new(delta.t.x as f32, delta.t.y as f32, 0.0) * t + lift)
+        } else {
+            // The center of the rotation: (I - M) c = t.
+            let c = (DMat2::IDENTITY - delta.m).inverse() * delta.t;
+            let c = Vec3::new(c.x as f32, c.y as f32, 0.0);
+            Affine3A::from_translation(lift + c)
+                * Affine3A::from_rotation_z(angle as f32 * t)
+                * Affine3A::from_translation(-c)
+        }
+    };
+    screw * rest(from)
 }
 
 /// From 0 to 1 and back, every 2.4 seconds; 1 when the motion is reduced.

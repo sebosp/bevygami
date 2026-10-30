@@ -249,17 +249,29 @@ fn grab_flap(session: &Session, at: Option<DVec2>, pressed: Vec2) -> Option<Hold
     if !on_flap {
         return None;
     }
-    let (a, d) = plan.axis;
-    let reflect = Pose::reflection(a, d);
-    // Taken next to the fold line, the moving point steers better.
-    let grab = if (reflect.apply(at) - at).length() < 0.3 {
-        plan.before.image_of(plan.grip)?
-    } else {
-        at
+    // Where the point taken lands: the face under it, from where it is to where it goes.
+    let landing = |p: DVec2| {
+        let i = plan
+            .before
+            .faces
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| plan.moving[*i] && f.contains(f.pose.inverse().apply(p)))
+            .max_by_key(|(_, f)| f.layer)
+            .map(|(i, _)| i)?;
+        let paper = plan.before.faces[i].pose.inverse().apply(p);
+        Some(plan.landed.faces[i].pose.apply(paper))
     };
+    let mut grab = at;
+    let mut land = landing(at)?;
+    if (land - grab).length() < 0.3 {
+        // Taken next to the fold line, the moving point steers better.
+        grab = plan.before.image_of(plan.grip)?;
+        land = plan.landed.image_of(plan.grip)?;
+    }
     Some(Hold::Flap {
         grab,
-        land: reflect.apply(grab),
+        land,
         pressed,
         moved: false,
     })

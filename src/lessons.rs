@@ -8,7 +8,7 @@ use std::f64::consts::{FRAC_PI_4, SQRT_2};
 
 use bevy::math::{DMat2, DVec2};
 
-use crate::fold::{Fold, Line, Paper, Pose};
+use crate::fold::{Collapse, Fold, FoldKind, Grip, Line, Paper, Pose};
 
 pub const BL: DVec2 = DVec2::new(-1.0, -1.0);
 pub const BR: DVec2 = DVec2::new(1.0, -1.0);
@@ -82,6 +82,8 @@ pub fn all() -> Vec<Lesson> {
         dog_face(),
         waterbomb_base(),
         preliminary_base(),
+        bird_base(),
+        crane(),
     ]
 }
 
@@ -352,6 +354,196 @@ fn preliminary_base() -> Lesson {
     }
 }
 
+/// Where the kite creases of the bird base meet the book folds: `2 - √2` from the center.
+const K: f64 = 2.0 - SQRT_2;
+
+/// The bird base, folded from the preliminary base: the kite creases from the four corners to the
+/// book folds, the hinges of the two petals, and the book folds opened flat between the kite
+/// creases and the edges. At a kite tip four creases meet: 112.5° + 67.5° = 180°, Kawasaki holds;
+/// the book fold is a mountain from the colored side, the kites and the hinge valleys, Maekawa
+/// holds (3 V, 1 M).
+const BIRD: Collapse = Collapse {
+    fold: &[
+        (BL, p(-K, 0.0), FoldKind::Valley),
+        (BL, p(0.0, -K), FoldKind::Valley),
+        (TR, p(K, 0.0), FoldKind::Valley),
+        (TR, p(0.0, K), FoldKind::Valley),
+        (TL, p(-K, 0.0), FoldKind::Valley),
+        (TL, p(0.0, K), FoldKind::Valley),
+        (BR, p(K, 0.0), FoldKind::Valley),
+        (BR, p(0.0, -K), FoldKind::Valley),
+        (p(-K, 0.0), p(0.0, -K), FoldKind::Valley),
+        (p(K, 0.0), p(0.0, K), FoldKind::Valley),
+    ],
+    // The book folds open between the kite creases and the edges: the sides come in.
+    flat: &[
+        (p(-K, 0.0), p(-1.0, 0.0)),
+        (p(K, 0.0), p(1.0, 0.0)),
+        (p(0.0, -K), p(0.0, -1.0)),
+        (p(0.0, K), p(0.0, 1.0)),
+    ],
+    mirror: false,
+};
+
+fn bird_base() -> Lesson {
+    let mut steps = preliminary_steps();
+    let bottom = DVec2::new(0.0, -SQRT_2);
+    let side = SQRT_2 - 1.0;
+    let precreases = |which: &'static str| {
+        vec![
+            step(
+                Fold::valley(
+                    Line::Folded(bottom, DVec2::new(-side, -side)),
+                    Grip::Top(DVec2::new(-0.55, -0.75)),
+                )
+                .flap()
+                .and_unfold(),
+                if which == "front" {
+                    "Fold the lower left edge of the front flap to the center line, and unfold."
+                } else {
+                    "Same on this side: the lower left edge to the center, and unfold."
+                },
+            ),
+            step(
+                Fold::valley(
+                    Line::Folded(bottom, DVec2::new(side, -side)),
+                    Grip::Top(DVec2::new(0.55, -0.75)),
+                )
+                .flap()
+                .and_unfold(),
+                "The lower right edge to the center line, and unfold.",
+            ),
+            step(
+                Fold::valley(
+                    Line::Folded(DVec2::new(-1.0, -side), DVec2::new(1.0, -side)),
+                    Grip::Top(DVec2::new(0.0, -0.15)),
+                )
+                .flap()
+                .and_unfold(),
+                "Fold the top triangle down along the ends of those creases, and unfold.",
+            ),
+        ]
+    };
+    steps.extend(precreases("front"));
+    steps.push(step(Fold::turn_over(), "Turn the model over."));
+    steps.extend(precreases("back"));
+    steps.push(step(Fold::turn_over(), "Turn it back over."));
+    steps.push(step(
+        Fold::collapse(BIRD, p(-0.75, 0.8)),
+        "Petal fold: lift the bottom corner of the front layer up along the top crease, the sides come in along the kite creases; the back the same way, behind.",
+    ));
+    Lesson {
+        title: "11. The bird base",
+        about: "Kite creases and petal folds on both sides of the preliminary base: the base of the crane, the flapping bird and many more.",
+        diamond: true,
+        colored_up: false,
+        steps,
+        done: "The bird base: two long petals up, two flaps down that become the neck and the tail of the crane.",
+    }
+}
+
+/// The corner at the tip of the back petal of the bird base.
+const BACK_WING: DVec2 = TR;
+
+fn crane() -> Lesson {
+    let mut steps = bird_base().steps;
+    let bottom = DVec2::new(0.0, -SQRT_2);
+    // The lower edges of the legs onto the center line: the bisector at the bottom, 101.25°
+    // (78.75° on the right, `x` = -1).
+    let narrow = |x: f64| {
+        let a = (101.25f64).to_radians();
+        Line::Folded(bottom, bottom + DVec2::new(x * a.cos(), a.sin()))
+    };
+    let narrow_steps = |side: &'static str| {
+        vec![
+            step(
+                Fold::valley(narrow(1.0), Grip::Top(DVec2::new(-0.25, -0.6))).flap(),
+                if side == "front" {
+                    "Narrow the legs: valley fold the lower left edge of the front layer to the center line."
+                } else {
+                    "The same on this side: the lower left edge to the center line."
+                },
+            ),
+            step(
+                Fold::valley(narrow(-1.0), Grip::Top(DVec2::new(0.25, -0.6))).flap(),
+                "And the lower right edge.",
+            ),
+        ]
+    };
+    steps.extend(narrow_steps("front"));
+    steps.push(step(Fold::turn_over(), "Turn the model over."));
+    steps.extend(narrow_steps("back"));
+    steps.push(step(Fold::turn_over(), "Turn it back over."));
+    // The legs go up between the wings, at 30° from the vertical.
+    let hinge = DVec2::new(0.0, -0.6);
+    let up = |x: f64| {
+        let a = (195.0f64).to_radians();
+        Line::Folded(hinge, hinge + DVec2::new(x * a.cos(), a.sin()))
+    };
+    steps.push(step(
+        Fold::inside_reverse(up(1.0), TL),
+        "Inside reverse fold the left leg up between the wings: the neck.",
+    ));
+    steps.push(step(
+        Fold::inside_reverse(up(-1.0), BR),
+        "Inside reverse fold the right leg up: the tail.",
+    ));
+    // The head: the tip of the neck reversed down, the neck goes up at 120°.
+    let tip = DVec2::new(-(SQRT_2 - 1.0) + 0.0071, 0.105);
+    let along = DVec2::new(-0.5, 0.75f64.sqrt());
+    let at = tip - along * 0.2;
+    let head = (165.0f64).to_radians();
+    steps.push(step(
+        Fold::inside_reverse(Line::Folded(at, at + DVec2::new(head.cos(), head.sin())), TL),
+        "Inside reverse fold the tip of the neck down: the head.",
+    ));
+    // The wings down, along the top of the body.
+    let wings = Line::Folded(DVec2::new(-1.0, -0.33), DVec2::new(1.0, -0.33));
+    steps.push(step(
+        Fold::valley(wings, Grip::Top(DVec2::new(0.0, 0.45))).flap(),
+        "Fold the front wing down.",
+    ));
+    steps.push(step(
+        Fold::mountain(wings, Grip::Paper(BACK_WING)).flap(),
+        "Fold the back wing down behind.",
+    ));
+    Lesson {
+        title: "12. The crane",
+        about: "The orizuru, the traditional crane: the bird base, narrowed legs reversed into a neck and a tail, a head, the wings down.",
+        diamond: true,
+        colored_up: false,
+        steps,
+        done: "A crane. Pull the wings apart gently and the body puffs up. Fold a thousand and make a wish.",
+    }
+}
+
+/// The creases that are folded on the paper (the faces on both sides are not placed alike), for
+/// the flat-foldability checks.
+#[cfg(test)]
+fn folded_creases(paper: &Paper) -> Vec<crate::fold::Crease> {
+    let mut folded = Vec::new();
+    for (i, f) in paper.faces.iter().enumerate() {
+        for g in &paper.faces[i + 1..] {
+            if f.pose.close_to(&g.pose) {
+                continue;
+            }
+            for (a, b) in crate::fold::shared_edges(f, g) {
+                if let Some(c) = paper.creases.iter().find(|c| {
+                    let near = |x: DVec2| {
+                        let ab = c.b - c.a;
+                        let t = ((x - c.a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+                        x.distance(c.a + ab * t) < 1e-6
+                    };
+                    near(a) && near(b)
+                }) {
+                    folded.push(crate::fold::Crease { a, b, ..*c });
+                }
+            }
+        }
+    }
+    folded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +610,40 @@ mod tests {
             let at = last.image_of(DVec2::new(-corner.x, corner.y)).unwrap();
             assert!(at.distance(DVec2::new(0.0, -SQRT_2)) < 1e-9, "{corner} is at {at}");
         }
+    }
+
+    #[test]
+    fn the_bird_base_collapses() {
+        let lesson = bird_base();
+        let (_, last) = plan_all(lesson.start(), &lesson.folds()).unwrap();
+        let (min, max) = last.bounds();
+        assert!((max.x - (SQRT_2 - 1.0)).abs() < 1e-9 && (min.x + SQRT_2 - 1.0).abs() < 1e-9);
+        assert!((max.y - (2.0 - SQRT_2)).abs() < 1e-9 && (min.y + SQRT_2).abs() < 1e-9);
+        // Two corners at the tip of the petals, two at the bottom.
+        let up = [BL, BR, TL, TR]
+            .iter()
+            .filter(|c| last.image_of(DVec2::new(-c.x, c.y)).unwrap().y > 0.5)
+            .count();
+        assert_eq!(up, 2);
+        // Flat-foldable at every vertex inside the sheet, the creases that are folded.
+        for vertex in crate::cp::inner_vertices(&super::folded_creases(&last)) {
+            assert!(vertex.flat_foldable(), "{vertex:?}");
+        }
+    }
+
+    #[test]
+    fn the_crane_has_a_neck_a_tail_and_wings_down() {
+        let lesson = crane();
+        let (_, last) = plan_all(lesson.start(), &lesson.folds()).unwrap();
+        let at = |c: DVec2| last.image_of(DVec2::new(-c.x, c.y)).unwrap();
+        // The tail up on the right, the head hooked down on the left of the neck.
+        let (tail, head) = (at(BR), at(TL));
+        assert!(tail.x > 0.35 && tail.y > 0.0, "tail at {tail}");
+        assert!(head.x < -0.4 && head.y < tail.y, "head at {head}");
+        // Both wing tips down, together.
+        assert!(at(BL).distance(at(TR)) < 1e-9 && at(BL).y < -1.0);
+        let total: f64 = last.faces.iter().map(|f| f.area()).sum();
+        assert!((total - 4.0).abs() < 1e-6);
     }
 
     #[test]
