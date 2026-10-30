@@ -17,6 +17,10 @@ browser.
 | 6. Pleats            | valley and mountain side by side, stacked in levels             |
 | 7. The paper cup     | a traditional model, folding one flap only                      |
 | 8. The dog face      | a traditional model, the first of many folders                  |
+| 9. The waterbomb base | the inside reverse fold                                        |
+| 10. The preliminary base | inside reverse folds from a triangle, the start of the crane |
+
+The traditional models and the preliminary base start white side up, so the color ends outside.
 
 ## How the lines read
 
@@ -43,10 +47,14 @@ were checked with a palette validator (lightness, chroma, color-blind separation
   **Fold**, → Space or Enter fold it for you; **‹ Back**, ← or Backspace unfold the last step.
 - Drag around the paper (or with the right button) to turn it, the wheel or a pinch to zoom, R or
   **Reset view** to come back.
-- **Lessons** (a feathers menu), **Settings** (dark or light theme, the paper color, the arrows,
-  the landing outline, the crease pattern, reduce motion), **?** for the help.
+- Ctrl and the wheel, Ctrl+= Ctrl+- Ctrl+0, a pinch, or the buttons of the settings zoom the
+  text and the panels, for a display that is hard to read.
+- **Lessons** (a feathers menu, with the step reached and the lessons done), **Settings** (dark
+  or light theme, the paper color, thin, normal or bold lines, the zoom, the arrows, the landing
+  outline, the crease pattern, reduce motion), **?** for the help. At the end of a lesson,
+  **Next lesson ›**.
 
-The settings and the step reached are saved in `~/.config/bevygami/settings.json` (`%APPDATA%` on
+Each lesson opens again at the step it was left. The settings and the progress are saved in `~/.config/bevygami/settings.json` (`%APPDATA%` on
 Windows, the `localStorage` in the browser).
 
 ## The folding engine
@@ -56,7 +64,11 @@ polygon in the coordinates of the unfolded square, an isometry to the folded mod
 included: the back of the paper up), and a layer. A step is a fold line built from points of the
 paper like the Huzita–Hatori axioms (O1 through two points, O2 a point onto a point, O3 an edge
 onto an edge), a point that moves, valley or mountain, all the layers or one flap (the faces on the
-moving side joined to the moving point through the paper), and fold or fold-and-unfold. The faces
+moving side joined to the moving point through the paper), and fold or fold-and-unfold. The
+moving point can also be the top layer at a point of the folded model, and the line two points
+of the folded model, for the steps on many layers. Inside and outside reverse folds turn the two
+halves of a flap opposite ways and reverse the part of its spine that moves; a turn over mirrors
+the whole model and its layers. The faces
 are cut along the line, the moving ones reflected and restacked (on top for a valley, under for a
 mountain, their order reversed); in 3D the reflection is a half turn around the line, which is the
 animation. The creases are recorded mountain or valley as seen from the front side, as in ORIPA.
@@ -66,11 +78,11 @@ angles sum to π) at every inner vertex, the ground for the crease pattern lesso
 
 ## Roadmap
 
-1. **Now**: simple folds (valley, mountain, fold and unfold, flaps), the traditional bases and
-   models above.
-2. **Compound folds**: inside and outside reverse folds, squash, petal and rabbit ear folds, swivel
-   folds. They fold several creases at once: the waterbomb and preliminary bases, the bird base,
-   the crane.
+1. **Now**: simple folds (valley, mountain, fold and unfold, flaps), inside and outside reverse
+   folds, turning over; the bases and models above.
+2. **Compound folds**: squash, petal and rabbit ear folds, swivel folds, for the bird base and the
+   crane. They fold several creases at once, where a face can turn about two lines in one step
+   (a petal fold): they need the collapse of the next point.
 3. **Folding from a crease pattern**: the flat folded shape from the CP by reflecting the faces
    along a spanning tree (ORIPA's folded estimation), then the layer order by constraint solving
    (the face-pair and the 3- and 4-face constraints of Jason Ku and of ORIPA). Then collapses of
@@ -96,7 +108,7 @@ only for the local runs: a binary built with it needs `libbevy_dylib.so` next to
 
 Screenshots without a person at the mouse: `BEVYGAMI_SCREENSHOT=out.png` with `BEVYGAMI_LESSON=n`,
 `BEVYGAMI_STEP=n`, `BEVYGAMI_T=0.5` (a fold half way), `BEVYGAMI_YAW` / `BEVYGAMI_PITCH`,
-`BEVYGAMI_THEME=light`, `BEVYGAMI_PANEL=settings|help`, `BEVYGAMI_FRESH=1` (default settings, not
+`BEVYGAMI_THEME=light`, `BEVYGAMI_PANEL=settings|help`, `BEVYGAMI_ZOOM=1.25`, `BEVYGAMI_LINES=bold`, `BEVYGAMI_FRESH=1` (default settings, not
 saved).
 
 CI: `.github/workflows/builds.yml` (tests, clippy, Linux, Windows, Android; a release for the

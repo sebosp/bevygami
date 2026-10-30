@@ -2,6 +2,8 @@
 //!
 //! Native builds save to `~/.config/bevygami/settings.json` (or `$XDG_CONFIG_HOME`), Android to the
 //! private storage of the app, the web build to the `localStorage` of the browser.
+use std::collections::BTreeMap;
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +64,41 @@ pub struct Settings {
     pub step: usize,
     /// The lessons with every step folded.
     pub done: Vec<usize>,
+    /// The step reached in each lesson, to come back to it.
+    pub steps: BTreeMap<usize, usize>,
+    /// The zoom of the panels and the text, over the window's own scale.
+    pub zoom: f32,
+    pub lines: LineWeight,
+}
+
+/// The width of the fold lines and the creases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LineWeight {
+    Thin,
+    #[default]
+    Normal,
+    Bold,
+}
+
+impl LineWeight {
+    pub const ALL: [LineWeight; 3] = [LineWeight::Thin, LineWeight::Normal, LineWeight::Bold];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LineWeight::Thin => "Thin",
+            LineWeight::Normal => "Normal",
+            LineWeight::Bold => "Bold",
+        }
+    }
+
+    /// The factor on the line widths.
+    pub fn scale(self) -> f32 {
+        match self {
+            LineWeight::Thin => 0.7,
+            LineWeight::Normal => 1.0,
+            LineWeight::Bold => 1.6,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -76,11 +113,32 @@ impl Default for Settings {
             lesson: 0,
             step: 0,
             done: Vec::new(),
+            steps: BTreeMap::new(),
+            zoom: 1.0,
+            lines: LineWeight::Normal,
         }
     }
 }
 
 impl Settings {
+    /// Where to start a lesson: the step reached last time, the first one once it was finished.
+    pub fn resume(&self, lesson: usize, steps: usize) -> usize {
+        match self.steps.get(&lesson) {
+            Some(step) if *step < steps => *step,
+            _ => 0,
+        }
+    }
+
+    /// Notes where the player is.
+    pub fn reached(&mut self, lesson: usize, step: usize, steps: usize) {
+        self.lesson = lesson;
+        self.step = step;
+        self.steps.insert(lesson, step);
+        if step >= steps && !self.done.contains(&lesson) {
+            self.done.push(lesson);
+        }
+    }
+
     pub fn load() -> Self {
         if std::env::var_os("BEVYGAMI_FRESH").is_some() {
             return Settings::default();

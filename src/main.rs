@@ -80,6 +80,12 @@ mod snapshot {
             if let Some(lesson) = var::<usize>("BEVYGAMI_LESSON") {
                 session.load(lesson.saturating_sub(1), var("BEVYGAMI_STEP").unwrap_or(0));
             }
+            if let Some(zoom) = var::<f32>("BEVYGAMI_ZOOM") {
+                settings.zoom = zoom;
+            }
+            if std::env::var("BEVYGAMI_LINES").is_ok_and(|t| t == "bold") {
+                settings.lines = bevygami::settings::LineWeight::Bold;
+            }
             if std::env::var("BEVYGAMI_THEME").is_ok_and(|t| t == "light") {
                 *theme = ThemeMode::Light;
                 settings.theme = ThemeMode::Light;

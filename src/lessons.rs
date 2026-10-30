@@ -6,7 +6,7 @@
 //! `TR` at the top, `TL` on the left and `BR` on the right.
 use std::f64::consts::{FRAC_PI_4, SQRT_2};
 
-use bevy::math::DVec2;
+use bevy::math::{DMat2, DVec2};
 
 use crate::fold::{Fold, Line, Paper, Pose};
 
@@ -31,6 +31,9 @@ pub struct Lesson {
     pub about: &'static str,
     /// The square shown as a diamond.
     pub diamond: bool,
+    /// The colored side up at the start; the traditional models start white side up, so the
+    /// color ends outside.
+    pub colored_up: bool,
     pub steps: Vec<Step>,
     /// Said when the last fold is done.
     pub done: &'static str,
@@ -38,15 +41,28 @@ pub struct Lesson {
 
 impl Lesson {
     pub fn start(&self) -> Paper {
-        Paper::square(if self.diamond {
-            Pose::rotation(FRAC_PI_4)
-        } else {
-            Pose::IDENTITY
-        })
+        Paper::square(self.start_pose())
     }
 
+    /// The sheet turned as a diamond, and over (mirrored by `x ↦ -x`) when the white side is up.
+    pub fn start_pose(&self) -> Pose {
+        let turn = Pose::rotation(if self.diamond { FRAC_PI_4 } else { 0.0 });
+        if self.colored_up {
+            turn
+        } else {
+            Pose {
+                m: turn.m * DMat2::from_diagonal(DVec2::new(-1.0, 1.0)),
+                t: DVec2::ZERO,
+            }
+        }
+    }
+
+    /// The folds on the sheet as it lies: mirrored with it, they look the same.
     pub fn folds(&self) -> Vec<Fold> {
-        self.steps.iter().map(|s| s.fold).collect()
+        self.steps
+            .iter()
+            .map(|s| if self.colored_up { s.fold } else { s.fold.mirrored() })
+            .collect()
     }
 }
 
@@ -64,6 +80,8 @@ pub fn all() -> Vec<Lesson> {
         pleats(),
         paper_cup(),
         dog_face(),
+        waterbomb_base(),
+        preliminary_base(),
     ]
 }
 
@@ -72,6 +90,7 @@ fn diagonal_fold() -> Lesson {
         title: "1. The diagonal fold",
         about: "The valley fold: the paper comes toward you, the crease sinks like a valley. Diagrams draw it dashed.",
         diamond: true,
+        colored_up: true,
         steps: vec![
             step(
                 Fold::bring(BL, TR),
@@ -91,6 +110,7 @@ fn mountain_fold() -> Lesson {
         title: "2. The mountain fold",
         about: "The mountain fold goes away from you, behind the paper. Diagrams draw it dash-dot-dot.",
         diamond: true,
+        colored_up: true,
         steps: vec![
             step(
                 Fold::mountain(Line::Bring(BL, TR), BL),
@@ -110,6 +130,7 @@ fn precreases() -> Lesson {
         title: "3. Fold and unfold",
         about: "Precreases: fold, unfold, and the crease stays to guide the folds after it.",
         diamond: false,
+        colored_up: true,
         steps: vec![
             step(
                 Fold::bring(BL, TR).and_unfold(),
@@ -134,6 +155,7 @@ fn kite_base() -> Lesson {
         title: "4. The kite base",
         about: "Bring an edge onto a crease: the fold bisects the corner. The base of many birds and fish.",
         diamond: true,
+        colored_up: true,
         steps: vec![
             step(
                 Fold::bring(TL, BR).and_unfold(),
@@ -157,6 +179,7 @@ fn blintz() -> Lesson {
         title: "5. The blintz",
         about: "Four corners to the center, named after the folded pancake. A base of boxes and fortune tellers.",
         diamond: false,
+        colored_up: true,
         steps: vec![
             step(Fold::bring(BL, TR).and_unfold(), "Fold and unfold a diagonal."),
             step(
@@ -183,6 +206,7 @@ fn pleats() -> Lesson {
         title: "6. Pleats",
         about: "A pleat is a valley and a mountain side by side; pleats stack in levels, the ground of box pleating.",
         diamond: false,
+        colored_up: true,
         steps: vec![
             step(
                 Fold::bring(BL, TL).and_unfold(),
@@ -217,8 +241,9 @@ const CUP: f64 = 4.0 - 2.0 * SQRT_2;
 fn paper_cup() -> Lesson {
     Lesson {
         title: "7. The paper cup",
-        about: "A traditional model: folds of all the layers, then of one flap only.",
+        about: "A traditional model, started white side up so the color ends outside: folds of all the layers, then of one flap only.",
         diamond: true,
+        colored_up: false,
         steps: vec![
             step(
                 Fold::bring(BL, TR),
@@ -248,8 +273,9 @@ fn paper_cup() -> Lesson {
 fn dog_face() -> Lesson {
     Lesson {
         title: "8. The dog face",
-        about: "The first model of many folders: a triangle, two ears and a nose.",
+        about: "The first model of many folders, white side up at the start: a triangle, two ears and a nose.",
         diamond: true,
+        colored_up: false,
         steps: vec![
             step(
                 Fold::bring(TR, BL),
@@ -272,6 +298,60 @@ fn dog_face() -> Lesson {
     }
 }
 
+fn waterbomb_base() -> Lesson {
+    Lesson {
+        title: "9. The waterbomb base",
+        about: "The inside reverse fold: a corner pushed in between its own layers, the crease along its spine turns inside out.",
+        diamond: false,
+        colored_up: true,
+        steps: vec![
+            step(
+                Fold::bring(TL, BL),
+                "Valley fold the top edge down onto the bottom edge.",
+            ),
+            step(
+                Fold::inside_reverse(Line::Through(CENTER, BL), p(-1.0, 0.0)),
+                "Inside reverse fold the left corner: open the layers a little and push the corner in between them, along the diagonal.",
+            ),
+            step(
+                Fold::inside_reverse(Line::Through(CENTER, BR), p(1.0, 0.0)),
+                "Inside reverse fold the right corner the same way.",
+            ),
+        ],
+        done: "The waterbomb base: a triangle with two flaps on each side. The waterbomb and the jumping frog start here.",
+    }
+}
+
+/// The steps of the preliminary (square) base, white side up: from a triangle, both corners
+/// reversed inside along the book fold lines.
+fn preliminary_steps() -> Vec<Step> {
+    vec![
+        step(
+            Fold::bring(TR, BL),
+            "Valley fold the top corner down to the bottom corner: a triangle.",
+        ),
+        step(
+            Fold::inside_reverse(Line::Through(CENTER, p(-1.0, 0.0)), TL),
+            "Inside reverse fold the left corner down to the bottom, between the layers.",
+        ),
+        step(
+            Fold::inside_reverse(Line::Through(CENTER, p(0.0, -1.0)), BR),
+            "Inside reverse fold the right corner the same way: a square standing on a corner.",
+        ),
+    ]
+}
+
+fn preliminary_base() -> Lesson {
+    Lesson {
+        title: "10. The preliminary base",
+        about: "Also called the square base, the start of the crane, the lily and the frog. The waterbomb base turned inside out.",
+        diamond: true,
+        colored_up: false,
+        steps: preliminary_steps(),
+        done: "The preliminary base: closed at the top, four flaps at the open bottom. The bird base and the crane come next, with the petal fold.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,7 +369,11 @@ mod tests {
                 "{}: the paper area is {total}",
                 lesson.title
             );
-            for (i, plan) in plans.iter().enumerate() {
+            for (i, plan) in plans
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.fold.style != crate::fold::Style::TurnOver)
+            {
                 assert!(!plan.chords.is_empty(), "{} step {}: no crease", lesson.title, i + 1);
             }
         }
@@ -307,6 +391,33 @@ mod tests {
         // The two flap tips are level with each other.
         let other = plans[2].after.image_of(TL).unwrap();
         assert!((other.y - corner.y).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_bases_have_their_shape() {
+        // The waterbomb base: a triangle, apex at the middle of the top edge.
+        let lesson = waterbomb_base();
+        let (_, last) = plan_all(lesson.start(), &lesson.folds()).unwrap();
+        let (min, max) = last.bounds();
+        assert!(min.distance(DVec2::new(-1.0, -1.0)) < 1e-9 && max.distance(DVec2::new(1.0, 0.0)) < 1e-9);
+        assert!(last.creases.iter().filter(|c| c.step >= 1).count() >= 4);
+        // Maekawa and Kawasaki hold at the center, as for the base folded by hand.
+        let vertices = crate::cp::inner_vertices(&last.creases);
+        assert_eq!(vertices.len(), 1);
+        assert!(vertices[0].flat_foldable(), "{:?}", vertices[0]);
+        // The preliminary base: a square of half the side, standing on a corner, every corner of
+        // the sheet at the bottom.
+        let lesson = preliminary_base();
+        let (_, last) = plan_all(lesson.start(), &lesson.folds()).unwrap();
+        let (min, max) = last.bounds();
+        assert!((max.x - min.x - SQRT_2).abs() < 1e-9 && (max.y - min.y - SQRT_2).abs() < 1e-9);
+        for vertex in crate::cp::inner_vertices(&last.creases) {
+            assert!(vertex.flat_foldable(), "{vertex:?}");
+        }
+        for corner in [BL, BR, TL, TR] {
+            let at = last.image_of(DVec2::new(-corner.x, corner.y)).unwrap();
+            assert!(at.distance(DVec2::new(0.0, -SQRT_2)) < 1e-9, "{corner} is at {at}");
+        }
     }
 
     #[test]

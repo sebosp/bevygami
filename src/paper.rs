@@ -76,6 +76,7 @@ impl Plugin for PaperPlugin {
                     place,
                     breathe,
                     paint_paper,
+                    line_widths,
                     draw_creases,
                     draw_fold_line,
                     draw_guides,
@@ -245,7 +246,7 @@ fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Que
             let side = Vec3::new(plan.side.x as f32, plan.side.y as f32, 0.0);
             // The moving side turns up (valley) or down (mountain).
             let axis = side.cross(Vec3::Z).normalize();
-            let signed = if plan.fold.kind == FoldKind::Valley {
+            let signed = if plan.turns[i] == FoldKind::Valley {
                 angle
             } else {
                 -angle
@@ -304,6 +305,17 @@ fn breathe(
     }
 }
 
+/// The widths of the lines follow the settings, in pixels.
+fn line_widths(settings: Res<Settings>, mut configs: ResMut<GizmoConfigStore>) {
+    if !settings.is_changed() {
+        return;
+    }
+    let scale = settings.lines.scale();
+    configs.config_mut::<CreaseGizmos>().0.line.width = 3.0 * scale;
+    configs.config_mut::<FoldLineGizmos>().0.line.width = 6.0 * scale;
+    configs.config_mut::<GuideGizmos>().0.line.width = 3.0 * scale;
+}
+
 /// The front color follows the settings.
 fn paint_paper(
     settings: Res<Settings>,
@@ -343,7 +355,7 @@ fn draw_creases(
         };
         // The last fold done reads best, the older ones fade.
         let age = step.saturating_sub(*made + 1) as f32;
-        let alpha = (0.6 - 0.1 * age).max(0.28);
+        let alpha = (0.8 - 0.1 * age).max(0.4);
         both_sides(affine, *a, *b, *kind, |p, q, kind| {
             gizmos.line(p, q, crease_on_paper(kind).with_alpha(alpha));
         });
@@ -387,7 +399,7 @@ fn draw_fold_line(
     let Some(plan) = session.plan() else {
         return;
     };
-    let alpha = 0.55 + 0.45 * breath(&time, &settings);
+    let alpha = 0.7 + 0.3 * breath(&time, &settings);
     for chord in &plan.chords {
         let Some(affine) = placement.faces.get(chord.face) else {
             continue;
@@ -454,11 +466,18 @@ fn draw_guides(time: Res<Time>, settings: Res<Settings>, session: Res<Session>, 
             }
         }
     }
+    // How the gripped flap turns: the front half of a reverse fold leads.
+    let grip_turn = plan
+        .before
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(i, f)| plan.moving[*i] && f.contains(plan.grip))
+        .max_by_key(|(_, f)| f.layer)
+        .map(|(i, _)| plan.turns[i])
+        .unwrap_or(plan.fold.kind);
     if settings.arrows
-        && let (Some(from), Some(to)) = (
-            plan.before.image_of(plan.fold.moving),
-            plan.landed.image_of(plan.fold.moving),
-        )
+        && let (Some(from), Some(to)) = (plan.before.image_of(plan.grip), plan.landed.image_of(plan.grip))
     {
         let (from, to) = (
             Vec3::new(from.x as f32, from.y as f32, top),
@@ -467,7 +486,7 @@ fn draw_guides(time: Res<Time>, settings: Res<Settings>, session: Res<Session>, 
         let span = from.distance(to);
         // An arc over the paper for a valley, under it for a mountain; the ends stay off the
         // points.
-        let lift = if plan.fold.kind == FoldKind::Valley { 1.0 } else { -1.0 } * 0.3 * span;
+        let lift = if grip_turn == FoldKind::Valley { 1.0 } else { -1.0 } * 0.3 * span;
         // Bent sideways too, along the fold line: a curve even seen from the front.
         let (_, d) = plan.axis;
         let along = Vec3::new(d.x as f32, d.y as f32, 0.0) * 0.18 * span;
@@ -488,7 +507,7 @@ fn draw_guides(time: Res<Time>, settings: Res<Settings>, session: Res<Session>, 
                 gizmos.line(tip, tip + (back * 0.9 - across * 0.45) * size, color);
             }
         };
-        let valley = plan.fold.kind == FoldKind::Valley;
+        let valley = grip_turn == FoldKind::Valley;
         head(points[segments], points[segments - 3], valley, &mut gizmos);
         if plan.fold.unfold {
             // Fold and unfold: the arrow goes and comes back, a head at both ends.

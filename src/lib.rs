@@ -12,13 +12,16 @@ pub mod settings;
 pub mod theme;
 pub mod ui;
 pub mod view;
+pub mod zoom;
 
 pub struct BevygamiPlugin;
 
 impl Plugin for BevygamiPlugin {
     fn build(&self, app: &mut App) {
         let settings = settings::Settings::load();
-        app.insert_resource(session::Session::new(settings.lesson, settings.step))
+        // Back where the player left, the finished model included.
+        let step = settings.steps.get(&settings.lesson).copied().unwrap_or(settings.step);
+        app.insert_resource(session::Session::new(settings.lesson, step))
             .insert_resource(settings.theme)
             .insert_resource(settings)
             .add_plugins((
@@ -29,6 +32,7 @@ impl Plugin for BevygamiPlugin {
                 view::ViewPlugin,
                 cpview::CpViewPlugin,
                 ui::UiPlugin,
+                zoom::ZoomPlugin,
             ));
     }
 }

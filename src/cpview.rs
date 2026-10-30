@@ -137,21 +137,28 @@ fn draw(
     mut images: ResMut<Assets<Image>>,
     mut drawn: Local<Option<(u32, usize, usize)>>,
 ) {
-    let key = (session.generation, settings.paper as usize, settings.theme as usize);
+    let key = (session.generation, settings.paper as usize, settings.lines as usize);
     if *drawn == Some(key) {
         return;
     }
     *drawn = Some(key);
     let mut pixmap = Pixmap::new(SIZE, SIZE).expect("pattern size");
-    // Paper coordinates to pixels, the sheet turned like the lesson starts.
+    // Paper coordinates to pixels, the sheet lying as the lesson starts: turned, and over when it
+    // starts white side up (the creases then as seen from that side).
+    let lesson = session.current();
     let half = SIZE as f32 / 2.0;
-    let diamond = session.current().diamond;
-    let scale = (half - 8.0) / if diamond { std::f32::consts::SQRT_2 } else { 1.0 };
-    let turn = if diamond { 45.0 } else { 0.0 };
+    let s = (half - 8.0) / if lesson.diamond { std::f32::consts::SQRT_2 } else { 1.0 };
+    let m = lesson.start_pose().m;
+    let (a, b, c, d) = (
+        m.x_axis.x as f32,
+        m.y_axis.x as f32,
+        m.x_axis.y as f32,
+        m.y_axis.y as f32,
+    );
     // y up on the paper, down in the image.
-    let transform = Transform::from_scale(scale, -scale)
-        .post_rotate_at(-turn, 0.0, 0.0)
-        .post_translate(half, half);
+    let transform = Transform::from_row(s * a, -s * c, s * b, -s * d, half, half);
+    let seen = |kind: FoldKind| if lesson.colored_up { kind } else { kind.opposite() };
+    let width = settings.lines.scale();
     let sheet = Face {
         poly: crate::fold::Paper::square(crate::fold::Pose::IDENTITY).faces[0]
             .poly
@@ -159,7 +166,12 @@ fn draw(
         pose: crate::fold::Pose::IDENTITY,
         layer: 0,
     };
-    polygon(&mut pixmap, &sheet, hex(settings.paper.hex()), transform);
+    let side = if lesson.colored_up {
+        settings.paper.hex()
+    } else {
+        "#f6f3ec"
+    };
+    polygon(&mut pixmap, &sheet, hex(side), transform);
     let paper = session.shown();
     if let Some(plan) = session.plan() {
         for (face, moving) in plan.before.faces.iter().zip(&plan.moving) {
@@ -194,8 +206,8 @@ fn draw(
             &mut pixmap,
             to_px(crease.a),
             to_px(crease.b),
-            crease_on_paper(crease.kind).with_alpha(alpha),
-            2.0,
+            crease_on_paper(seen(crease.kind)).with_alpha(alpha),
+            2.5 * width,
             None,
             Transform::identity(),
         );
@@ -206,9 +218,9 @@ fn draw(
                 &mut pixmap,
                 to_px(chord.a),
                 to_px(chord.b),
-                crease_on_paper(chord.kind),
-                3.0,
-                Some(chord.kind),
+                crease_on_paper(seen(chord.kind)),
+                3.5 * width,
+                Some(seen(chord.kind)),
                 Transform::identity(),
             );
         }

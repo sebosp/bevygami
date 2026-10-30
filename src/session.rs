@@ -16,7 +16,10 @@ pub enum Command {
     /// Unfolds the last step done.
     Back,
     Restart,
+    /// Opens a lesson where it was left.
     Lesson(usize),
+    /// The lesson after this one.
+    NextLesson,
 }
 
 pub struct Animation {
@@ -157,10 +160,18 @@ fn run_commands(mut commands: MessageReader<Command>, mut session: ResMut<Sessio
                 let lesson = session.lesson;
                 session.load(lesson, 0);
             }
-            Command::Lesson(i) => session.load(*i, 0),
+            Command::Lesson(i) => {
+                let n = session.lessons.get(*i).map_or(0, |l| l.steps.len());
+                session.load(*i, settings.resume(*i, n));
+            }
+            Command::NextLesson => {
+                let i = (session.lesson + 1) % session.lessons.len();
+                let n = session.lessons[i].steps.len();
+                session.load(i, settings.resume(i, n));
+            }
         }
-        settings.lesson = session.lesson;
-        settings.step = session.step;
+        let (lesson, step, n) = (session.lesson, session.step, session.plans.len());
+        settings.reached(lesson, step, n);
         settings.save();
     }
 }
@@ -180,11 +191,8 @@ fn animate(time: Res<Time>, mut session: ResMut<Session>, mut settings: ResMut<S
     if target == 1.0 {
         session.step += 1;
         session.generation += 1;
-        if session.finished() && !settings.done.contains(&session.lesson) {
-            let lesson = session.lesson;
-            settings.done.push(lesson);
-        }
     }
-    settings.step = session.step;
+    let (lesson, step, n) = (session.lesson, session.step, session.plans.len());
+    settings.reached(lesson, step, n);
     settings.save();
 }

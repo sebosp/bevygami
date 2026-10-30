@@ -14,9 +14,10 @@ use bevy::ui_widgets::{Activate, ValueChange};
 
 use crate::cpview::{self, CpImages};
 use crate::session::{Command, Session, SessionSystems};
-use crate::settings::{PaperColor, Settings};
+use crate::settings::{LineWeight, PaperColor, Settings};
 use crate::theme::ThemeMode;
 use crate::view::ResetView;
+use crate::zoom::Zoom;
 
 /// The panel over the window, it takes the keys.
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +71,16 @@ struct MountainSwatch;
 struct HelpOverlay;
 
 #[derive(Component, Default, Clone)]
+struct NextButton;
+
+#[derive(Component, Default, Clone)]
+struct ZoomLabel;
+
+/// The caption of a lesson in the menu, with its progress.
+#[derive(Component, Default, Clone)]
+struct LessonCaption(usize);
+
+#[derive(Component, Default, Clone)]
 struct SettingsOverlay;
 
 /// A lesson of the menu.
@@ -119,6 +130,11 @@ THE LINES
 VIEW
   Drag around the paper, or with the right button, to turn it in 3D.
   The wheel or a pinch zooms, R or Reset view brings it back.
+  Ctrl and the wheel, Ctrl+= Ctrl+- Ctrl+0 zoom the text and the panels (Settings too).
+
+PROGRESS
+  Each lesson opens where you left it; the Lessons menu shows the step reached and the
+  lessons done. Next lesson › appears at the end of a lesson.
 
 F1 or ? opens this help, Esc or a click closes it.";
 
@@ -133,6 +149,8 @@ impl Plugin for UiPlugin {
                 init_images,
                 update_texts,
                 update_dots,
+                update_captions,
+                update_zoom_label.run_if(resource_changed::<UiScale>),
                 show_panels.run_if(resource_changed::<Panel>),
                 show_pattern,
                 panel_keys,
@@ -148,10 +166,10 @@ fn spawn_ui(mut commands: Commands, session: Res<Session>, settings: Res<Setting
         .iter()
         .enumerate()
         .map(|(i, lesson)| -> Box<dyn SceneList> {
-            let title = lesson.title;
+            let title = lesson_caption(&settings, i, lesson.title, lesson.steps.len());
             bsn! {
                 @FeathersMenuItem {
-                    @caption: bsn! { @caption(title) }
+                    @caption: bsn! { @caption(title) LessonCaption({i}) }
                 }
                 LessonItem({i})
                 on(pick_lesson)
@@ -163,6 +181,8 @@ fn spawn_ui(mut commands: Commands, session: Res<Session>, settings: Res<Setting
     let themes = list_rows_from_strings(ThemeMode::ALL.map(ThemeMode::name), theme);
     let paper = PaperColor::ALL.iter().position(|p| *p == settings.paper);
     let papers = list_rows_from_strings(PaperColor::ALL.map(PaperColor::name), paper);
+    let weight = LineWeight::ALL.iter().position(|w| *w == settings.lines);
+    let weights = list_rows_from_strings(LineWeight::ALL.map(LineWeight::name), weight);
     let dots: Vec<Box<dyn SceneList>> = (0..MAX_DOTS)
         .map(|i| -> Box<dyn SceneList> {
             bsn! {
@@ -177,7 +197,7 @@ fn spawn_ui(mut commands: Commands, session: Res<Session>, settings: Res<Setting
             .into()
         })
         .collect();
-    commands.spawn_scene(root(Box::new(lessons), Box::new(dots), themes, papers));
+    commands.spawn_scene(root(Box::new(lessons), Box::new(dots), themes, papers, weights));
 }
 
 /// The longest lesson has fewer steps.
@@ -188,6 +208,7 @@ fn root(
     dots: Box<dyn SceneList>,
     themes: Box<dyn SceneList>,
     papers: Box<dyn SceneList>,
+    weights: Box<dyn SceneList>,
 ) -> impl Scene {
     bsn! {
         Node {
@@ -225,7 +246,7 @@ fn root(
             --
             @help_overlay()
             --
-            @settings_overlay(themes, papers)
+            @settings_overlay(themes, papers, weights)
         ]
     }
 }
@@ -346,6 +367,20 @@ fn instructions(dots: Box<dyn SceneList>) -> impl Scene {
             }
             StepDots
             Children [ {dots} ]
+            --
+            @FeathersButton {
+                @caption: bsn! { @caption("Next lesson ›") }
+                @variant: ButtonVariant::Primary,
+            }
+            NextButton
+            Node {
+                display: Display::None,
+                margin: UiRect::top(px(4)),
+            }
+            on(|_: On<Activate>, mut commands: MessageWriter<Command>, mut focus: ResMut<InputFocus>| {
+                commands.write(Command::NextLesson);
+                focus.clear();
+            })
         ]
     }
 }
@@ -459,7 +494,7 @@ fn setting_checkbox(setting: Setting, text: &'static str) -> impl Scene {
     }
 }
 
-fn settings_overlay(themes: Box<dyn SceneList>, papers: Box<dyn SceneList>) -> impl Scene {
+fn settings_overlay(themes: Box<dyn SceneList>, papers: Box<dyn SceneList>, weights: Box<dyn SceneList>) -> impl Scene {
     bsn! {
         Node {
             position_type: PositionType::Absolute,
@@ -531,6 +566,51 @@ fn settings_overlay(themes: Box<dyn SceneList>, papers: Box<dyn SceneList>) -> i
                         }
                         on(on_paper_change)
                     ]
+                    --
+                    Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: px(12),
+                    }
+                    Children [
+                        @label("Lines") Node { min_width: px(110) }
+                        --
+                        @FeathersSelect {
+                            @options: weights,
+                        }
+                        Node {
+                            min_width: px(180),
+                        }
+                        on(on_lines_change)
+                    ]
+                    --
+                    Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: px(8),
+                    }
+                    Children [
+                        @label("Zoom") Node { min_width: px(110) }
+                        --
+                        @FeathersButton {
+                            @caption: bsn! { @caption("−") }
+                        }
+                        on(|_: On<Activate>, mut zoom: MessageWriter<Zoom>| { zoom.write(Zoom::OUT); })
+                        --
+                        @label("100%") ZoomLabel Node { min_width: px(48), justify_content: JustifyContent::Center }
+                        --
+                        @FeathersButton {
+                            @caption: bsn! { @caption("+") }
+                        }
+                        on(|_: On<Activate>, mut zoom: MessageWriter<Zoom>| { zoom.write(Zoom::IN); })
+                        --
+                        @FeathersButton {
+                            @caption: bsn! { @caption("Reset") }
+                        }
+                        on(|_: On<Activate>, mut zoom: MessageWriter<Zoom>| { zoom.write(Zoom::Reset); })
+                    ]
+                    --
+                    @label_dim("Or Ctrl and the mouse wheel, Ctrl+= Ctrl+- Ctrl+0, a pinch of the trackpad")
                     --
                     @setting_checkbox(Setting::Arrows, "Arrows: how the paper moves")
                     --
@@ -654,6 +734,47 @@ fn on_theme_change(
     }
 }
 
+fn on_lines_change(change: On<ValueChange<Entity>>, options: Query<&OptionIndex>, mut settings: ResMut<Settings>) {
+    if let Ok(option) = options.get(change.value)
+        && let Some(lines) = LineWeight::ALL.get(option.0)
+    {
+        settings.lines = *lines;
+        settings.save();
+    }
+}
+
+/// A lesson in the menu: done, the step reached, or nothing yet.
+fn lesson_caption(settings: &Settings, lesson: usize, title: &str, steps: usize) -> String {
+    if settings.done.contains(&lesson) {
+        format!("{title}  · done")
+    } else {
+        match settings.steps.get(&lesson) {
+            Some(step) if *step > 0 && *step < steps => format!("{title}  · step {}/{steps}", step + 1),
+            _ => title.to_string(),
+        }
+    }
+}
+
+fn update_captions(settings: Res<Settings>, session: Res<Session>, mut captions: Query<(&LessonCaption, &mut Text)>) {
+    if !settings.is_changed() {
+        return;
+    }
+    for (LessonCaption(i), mut text) in &mut captions {
+        if let Some(lesson) = session.lessons.get(*i) {
+            let caption = lesson_caption(&settings, *i, lesson.title, lesson.steps.len());
+            if text.0 != caption {
+                text.0 = caption;
+            }
+        }
+    }
+}
+
+fn update_zoom_label(scale: Res<UiScale>, mut labels: Query<&mut Text, With<ZoomLabel>>) {
+    for mut text in &mut labels {
+        text.0 = crate::zoom::percent(scale.0);
+    }
+}
+
 fn on_paper_change(change: On<ValueChange<Entity>>, options: Query<&OptionIndex>, mut settings: ResMut<Settings>) {
     if let Ok(option) = options.get(change.value)
         && let Some(paper) = PaperColor::ALL.get(option.0)
@@ -701,6 +822,7 @@ fn update_texts(
     )>,
     back: Query<Entity, With<BackButton>>,
     fold: Query<Entity, With<FoldButton>>,
+    mut next: Query<&mut Node, With<NextButton>>,
     mut shown: Local<Option<(u32, usize)>>,
     mut commands: Commands,
 ) {
@@ -737,6 +859,13 @@ fn update_texts(
         } else {
             commands.entity(entity).remove::<InteractionDisabled>();
         }
+    }
+    for mut node in &mut next {
+        node.display = if session.finished() {
+            Display::Flex
+        } else {
+            Display::None
+        };
     }
     for entity in &fold {
         if session.finished() {

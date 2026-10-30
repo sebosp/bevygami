@@ -75,7 +75,8 @@ impl Plugin for ViewPlugin {
 }
 
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Camera3d::default(), MainCamera, Transform::default()));
+    // Smooth edges for the paper and the lines.
+    commands.spawn((Camera3d::default(), Msaa::Sample4, MainCamera, Transform::default()));
 }
 
 fn keys(
@@ -252,7 +253,7 @@ fn grab_flap(session: &Session, at: Option<DVec2>, pressed: Vec2) -> Option<Hold
     let reflect = Pose::reflection(a, d);
     // Taken next to the fold line, the moving point steers better.
     let grab = if (reflect.apply(at) - at).length() < 0.3 {
-        plan.before.image_of(plan.fold.moving)?
+        plan.before.image_of(plan.grip)?
     } else {
         at
     };
@@ -274,11 +275,15 @@ fn zoom(
     touches: Res<Touches>,
     hover: Res<HoverMap>,
     nodes: Query<(), With<Node>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut orbit: ResMut<Orbit>,
 ) {
-    let over_ui = hover
-        .get(&PointerId::Mouse)
-        .is_some_and(|hits| hits.keys().any(|e| nodes.contains(*e)));
+    // Ctrl and the wheel zoom the panels, see `crate::zoom`.
+    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let over_ui = ctrl
+        || hover
+            .get(&PointerId::Mouse)
+            .is_some_and(|hits| hits.keys().any(|e| nodes.contains(*e)));
     let lines = match scroll.unit {
         MouseScrollUnit::Line => scroll.delta.y,
         MouseScrollUnit::Pixel => scroll.delta.y / 40.0,

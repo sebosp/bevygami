@@ -181,7 +181,7 @@ impl Paper {
     }
 }
 
-/// How a fold line is found, from points of the paper (paper coordinates).
+/// How a fold line is found, from points of the paper (paper coordinates) or of the folded model.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Line {
     /// O1: the line through two points.
@@ -191,6 +191,37 @@ pub enum Line {
     /// O3: the line that brings the edge `(a, b)` onto the edge `(c, d)`: the bisector of their
     /// angle that sends `b - a` along `d - c`.
     EdgeOnto(DVec2, DVec2, DVec2, DVec2),
+    /// The line through two points of the folded model, where the paper is now: for the steps on
+    /// many layers, where a point of the paper is hard to name.
+    Folded(DVec2, DVec2),
+}
+
+impl Line {
+    /// The same line on the sheet mirrored by `x ↦ -x`, see [`Fold::mirrored`].
+    fn mirrored(self) -> Line {
+        let m = |p: DVec2| DVec2::new(-p.x, p.y);
+        match self {
+            Line::Through(p, q) => Line::Through(m(p), m(q)),
+            Line::Bring(p, q) => Line::Bring(m(p), m(q)),
+            Line::EdgeOnto(a, b, c, d) => Line::EdgeOnto(m(a), m(b), m(c), m(d)),
+            Line::Folded(p, q) => Line::Folded(p, q),
+        }
+    }
+}
+
+/// The point that moves, which picks the side of the line that folds and the flap.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Grip {
+    /// A point of the paper.
+    Paper(DVec2),
+    /// The top layer at a point of the folded model.
+    Top(DVec2),
+}
+
+impl From<DVec2> for Grip {
+    fn from(p: DVec2) -> Grip {
+        Grip::Paper(p)
+    }
 }
 
 /// Which layers fold.
@@ -204,30 +235,47 @@ pub enum Scope {
     Flap,
 }
 
+/// How the moving layers go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Style {
+    /// All together, valley or mountain.
+    #[default]
+    Simple,
+    /// A flap of two halves pushed inside itself, between its layers: the front half goes back,
+    /// the back half comes forward, the spine between them reverses.
+    InsideReverse,
+    /// A flap of two halves wrapped around itself: the front half comes forward, the back half
+    /// goes back.
+    OutsideReverse,
+    /// The whole model turned over, left to right.
+    TurnOver,
+}
+
 /// A step of a diagram.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Fold {
     pub line: Line,
-    /// A point of the paper that moves, it picks the side of the line that folds.
-    pub moving: DVec2,
+    pub moving: Grip,
     pub kind: FoldKind,
     pub scope: Scope,
+    pub style: Style,
     /// Fold and unfold: only a crease is left, a precrease.
     pub unfold: bool,
 }
 
 impl Fold {
-    pub fn valley(line: Line, moving: DVec2) -> Fold {
+    pub fn valley(line: Line, moving: impl Into<Grip>) -> Fold {
         Fold {
             line,
-            moving,
+            moving: moving.into(),
             kind: FoldKind::Valley,
             scope: Scope::All,
+            style: Style::Simple,
             unfold: false,
         }
     }
 
-    pub fn mountain(line: Line, moving: DVec2) -> Fold {
+    pub fn mountain(line: Line, moving: impl Into<Grip>) -> Fold {
         Fold {
             kind: FoldKind::Mountain,
             ..Fold::valley(line, moving)
@@ -239,6 +287,32 @@ impl Fold {
         Fold::valley(Line::Bring(from, to), from)
     }
 
+    /// An inside reverse fold of the flap at `moving`.
+    pub fn inside_reverse(line: Line, moving: impl Into<Grip>) -> Fold {
+        Fold {
+            style: Style::InsideReverse,
+            scope: Scope::Flap,
+            ..Fold::valley(line, moving)
+        }
+    }
+
+    /// An outside reverse fold of the flap at `moving`.
+    pub fn outside_reverse(line: Line, moving: impl Into<Grip>) -> Fold {
+        Fold {
+            style: Style::OutsideReverse,
+            scope: Scope::Flap,
+            ..Fold::valley(line, moving)
+        }
+    }
+
+    /// Turns the model over, left to right.
+    pub fn turn_over() -> Fold {
+        Fold {
+            style: Style::TurnOver,
+            ..Fold::valley(Line::Folded(DVec2::ZERO, DVec2::Y), Grip::Top(DVec2::ZERO))
+        }
+    }
+
     pub fn flap(self) -> Fold {
         Fold {
             scope: Scope::Flap,
@@ -248,6 +322,20 @@ impl Fold {
 
     pub fn and_unfold(self) -> Fold {
         Fold { unfold: true, ..self }
+    }
+
+    /// The same fold on the sheet mirrored by `x ↦ -x`: a lesson that starts with the sheet turned
+    /// over (white side up) names the same corners where they are seen.
+    pub fn mirrored(self) -> Fold {
+        let moving = match self.moving {
+            Grip::Paper(p) => Grip::Paper(DVec2::new(-p.x, p.y)),
+            top => top,
+        };
+        Fold {
+            line: self.line.mirrored(),
+            moving,
+            ..self
+        }
     }
 }
 
@@ -280,6 +368,10 @@ pub struct Planned {
     pub before: Paper,
     /// Per face of `before`.
     pub moving: Vec<bool>,
+    /// Per face of `before`: how a moving face turns, as seen by the viewer.
+    pub turns: Vec<FoldKind>,
+    /// The point of the paper that moves, for the arrow.
+    pub grip: DVec2,
     /// The fold line on the folded plane: a point and the unit direction.
     pub axis: (DVec2, DVec2),
     /// The unit normal of the line toward the moving side.
@@ -325,11 +417,27 @@ pub fn locate(paper: &Paper, line: Line) -> Result<(DVec2, DVec2), FoldError> {
                 (a + u * s, u + v)
             }
         }
+        Line::Folded(p, q) => (p, q - p),
     };
     if d.length() < EPS {
         return Err(FoldError::DegenerateLine);
     }
     Ok((a, d.normalize()))
+}
+
+/// The point of the paper under a point of the folded model, on the top layer there.
+pub fn top_at(paper: &Paper, q: DVec2) -> Option<DVec2> {
+    paper
+        .faces
+        .iter()
+        .filter(|f| {
+            let image = f.image();
+            let n = image.len();
+            let turn = if f.pose.flipped() { -1.0 } else { 1.0 };
+            (0..n).all(|i| cross(image[(i + 1) % n] - image[i], q - image[i]) * turn >= -EPS)
+        })
+        .max_by_key(|f| f.layer)
+        .map(|f| f.pose.m.transpose() * (q - f.pose.t))
 }
 
 /// Cuts a face along the line: the part on the left of `d` and the part on the right.
@@ -390,11 +498,16 @@ pub fn shared_edges(f: &Face, g: &Face) -> Vec<(DVec2, DVec2)> {
 
 /// Works out a fold of the paper, `step` is recorded on the new creases.
 pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError> {
+    if fold.style == Style::TurnOver {
+        return Ok(turn_over(paper, fold));
+    }
     let (a, d) = locate(paper, fold.line)?;
     let side_of = |p: DVec2| cross(d, p - a);
-    let moving_image = paper
-        .image_of(fold.moving)
-        .ok_or(FoldError::PointOffPaper(fold.moving))?;
+    let grip = match fold.moving {
+        Grip::Paper(p) => p,
+        Grip::Top(q) => top_at(paper, q).ok_or(FoldError::PointOffPaper(q))?,
+    };
+    let moving_image = paper.image_of(grip).ok_or(FoldError::PointOffPaper(grip))?;
     let sign = side_of(moving_image);
     if sign.abs() < 1e-6 {
         return Err(FoldError::MovingOnLine);
@@ -414,13 +527,14 @@ pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError
     }
     let mut moving: Vec<bool> = parts.iter().map(|(_, _, on_side)| *on_side).collect();
     if fold.scope == Scope::Flap {
-        // The faces joined to the moving point through the paper, on the moving side.
+        // The faces joined to the moving point through the paper, on the moving side; the top
+        // one when the point is on several.
         let start = parts
             .iter()
             .enumerate()
-            .filter(|(_, (part, _, on_side))| *on_side && part.contains(fold.moving))
+            .filter(|(_, (part, _, on_side))| *on_side && part.contains(grip))
+            .max_by_key(|(_, (part, _, _))| part.layer)
             .map(|(i, _)| i)
-            .next()
             .ok_or(FoldError::NothingMoves)?;
         let mut flap = vec![false; parts.len()];
         flap[start] = true;
@@ -460,6 +574,33 @@ pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError
         creases: paper.creases.clone(),
     };
 
+    let (lo, hi) = (
+        before.faces.iter().map(|f| f.layer).min().unwrap_or(0),
+        before.faces.iter().map(|f| f.layer).max().unwrap_or(0),
+    );
+    let moving_layers = || {
+        before
+            .faces
+            .iter()
+            .zip(&face_moving)
+            .filter(|(_, m)| **m)
+            .map(|(f, _)| f.layer)
+    };
+    let (mlo, mhi) = (moving_layers().min().unwrap_or(0), moving_layers().max().unwrap_or(0));
+    // The front half of a flap, for the reverse folds.
+    let front = |layer: i32| 2 * layer > mlo + mhi;
+    let turns: Vec<FoldKind> = before
+        .faces
+        .iter()
+        .map(|f| match fold.style {
+            Style::InsideReverse if front(f.layer) => FoldKind::Mountain,
+            Style::InsideReverse => FoldKind::Valley,
+            Style::OutsideReverse if front(f.layer) => FoldKind::Valley,
+            Style::OutsideReverse => FoldKind::Mountain,
+            _ => fold.kind,
+        })
+        .collect();
+
     // The fold line runs where a face that moves meets one that stays.
     let mut chords = Vec::new();
     for (i, f) in before.faces.iter().enumerate() {
@@ -474,9 +615,9 @@ pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError
                 let on_line = side_of(f.pose.apply(p)).abs() < 1e-6 && side_of(f.pose.apply(q)).abs() < 1e-6;
                 if on_line {
                     let kind = if f.pose.flipped() {
-                        fold.kind.opposite()
+                        turns[j].opposite()
                     } else {
-                        fold.kind
+                        turns[j]
                     };
                     chords.push(Chord {
                         face: i,
@@ -490,33 +631,36 @@ pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError
     }
 
     // The moving faces turn over: valley on top of the stack, mountain under it, their order
-    // reversed.
+    // reversed; an inside reverse fold slides each half just inside the layer it was.
     let reflect = Pose::reflection(a, d);
-    let (lo, hi) = (
-        before.faces.iter().map(|f| f.layer).min().unwrap_or(0),
-        before.faces.iter().map(|f| f.layer).max().unwrap_or(0),
-    );
-    let moving_layers = || {
-        before
-            .faces
-            .iter()
-            .zip(&face_moving)
-            .filter(|(_, m)| **m)
-            .map(|(f, _)| f.layer)
-    };
-    let (mlo, mhi) = (moving_layers().min().unwrap_or(0), moving_layers().max().unwrap_or(0));
     let mut landed = before.clone();
-    for (face, m) in landed.faces.iter_mut().zip(&face_moving) {
-        if *m {
+    for (i, face) in landed.faces.iter_mut().enumerate() {
+        let layer = face.layer;
+        face.layer = 4 * layer;
+        if face_moving[i] {
             face.pose = face.pose.then(&reflect);
-            face.layer = match fold.kind {
-                FoldKind::Valley => hi + 1 + (mhi - face.layer),
-                FoldKind::Mountain => lo - 1 - (face.layer - mlo),
+            face.layer = match (fold.style, turns[i]) {
+                (Style::InsideReverse, _) => 4 * layer + if front(layer) { -1 } else { 1 },
+                (_, FoldKind::Valley) => 4 * (hi + 1 + (mhi - layer)),
+                (_, FoldKind::Mountain) => 4 * (lo - 1 - (layer - mlo)),
             };
         }
     }
     compact_layers(&mut landed);
     let mut creases = paper.creases.clone();
+    if matches!(fold.style, Style::InsideReverse | Style::OutsideReverse) {
+        // The spine of the flap, between its two halves, turns inside out.
+        for (i, f) in before.faces.iter().enumerate() {
+            for (j, g) in before.faces.iter().enumerate().skip(i + 1) {
+                if !(face_moving[i] && face_moving[j]) || front(f.layer) == front(g.layer) {
+                    continue;
+                }
+                for (p, q) in shared_edges(f, g) {
+                    creases = reverse_part(creases, p, q, step);
+                }
+            }
+        }
+    }
     for chord in &chords {
         // A crease folded again takes the new direction.
         creases.retain(|c| !(same_segment((c.a, c.b), (chord.a, chord.b))));
@@ -540,12 +684,91 @@ pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError
         fold,
         before,
         moving: face_moving,
+        turns,
+        grip,
         axis: (a, d),
         side,
         after,
         landed,
         chords,
     })
+}
+
+/// The part `(p, q)` of the creases under it turned the other way, the rest of them kept.
+fn reverse_part(creases: Vec<Crease>, p: DVec2, q: DVec2, step: usize) -> Vec<Crease> {
+    let mut pieces = Vec::new();
+    for c in creases {
+        if !on_segment((c.a, c.b), p, q) {
+            pieces.push(c);
+            continue;
+        }
+        let (p, q) = if p.distance(c.a) <= q.distance(c.a) {
+            (p, q)
+        } else {
+            (q, p)
+        };
+        for (a, b, reversed) in [(c.a, p, false), (p, q, true), (q, c.b, false)] {
+            if a.distance(b) > 1e-6 {
+                pieces.push(Crease {
+                    a,
+                    b,
+                    kind: if reversed { c.kind.opposite() } else { c.kind },
+                    step: if reversed { step } else { c.step },
+                });
+            }
+        }
+    }
+    pieces
+}
+
+/// The segment `(p, q)` lies on the crease.
+fn on_segment(crease: (DVec2, DVec2), p: DVec2, q: DVec2) -> bool {
+    let near = |x: DVec2| {
+        let ab = crease.1 - crease.0;
+        let t = ((x - crease.0).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+        x.distance(crease.0 + ab * t) < 1e-6
+    };
+    near(p) && near(q)
+}
+
+/// The whole model turned over around the vertical line through its middle.
+fn turn_over(paper: &Paper, fold: Fold) -> Planned {
+    let (min, max) = paper.bounds();
+    let a = DVec2::new((min.x + max.x) / 2.0, (min.y + max.y) / 2.0);
+    let d = DVec2::Y;
+    // The arrow goes from the rightmost corner of the top layer.
+    let top = paper.max_layer();
+    let grip = paper
+        .faces
+        .iter()
+        .filter(|f| f.layer == top)
+        .flat_map(|f| f.poly.iter().map(move |p| (*p, f.pose.apply(*p))))
+        .max_by(|x, y| x.1.x.total_cmp(&y.1.x))
+        .map(|(p, _)| p)
+        .unwrap_or(DVec2::ZERO);
+    let reflect = Pose::reflection(a, d);
+    let (lo, hi) = (
+        paper.faces.iter().map(|f| f.layer).min().unwrap_or(0),
+        paper.max_layer(),
+    );
+    let mut landed = paper.clone();
+    for face in &mut landed.faces {
+        face.pose = face.pose.then(&reflect);
+        face.layer = hi + lo - face.layer;
+    }
+    let after = if fold.unfold { paper.clone() } else { landed.clone() };
+    Planned {
+        fold,
+        before: paper.clone(),
+        moving: vec![true; paper.faces.len()],
+        turns: vec![FoldKind::Valley; paper.faces.len()],
+        grip,
+        axis: (a, d),
+        side: DVec2::X,
+        after,
+        landed,
+        chords: Vec::new(),
+    }
 }
 
 fn same_segment(p: (DVec2, DVec2), q: (DVec2, DVec2)) -> bool {
@@ -650,6 +873,48 @@ mod tests {
         // TL lands on the diagonal, at its distance from BL.
         assert!(cross(TR - BL, tl - BL).abs() < 1e-9);
         assert!((tl.distance(BL) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn inside_reverse_reverses_half_the_spine() {
+        let paper = Paper::square(Pose::IDENTITY);
+        let rectangle = plan(&paper, Fold::bring(TL, BL), 0).unwrap().after;
+        let fold = Fold::inside_reverse(Line::Through(DVec2::ZERO, BL), DVec2::new(-1.0, 0.0));
+        let planned = plan(&rectangle, fold, 1).unwrap();
+        // The corner lands inside, between the two layers that stay.
+        let corner = planned.after.image_of(DVec2::new(-1.0, 0.0)).unwrap();
+        assert!(corner.distance(DVec2::new(0.0, -1.0)) < 1e-9);
+        let spine: Vec<_> = planned
+            .after
+            .creases
+            .iter()
+            .filter(|c| c.a.y == 0.0 && c.b.y == 0.0)
+            .collect();
+        assert_eq!(spine.len(), 2);
+        assert_ne!(spine[0].kind, spine[1].kind);
+        let layers: Vec<i32> = planned.after.faces.iter().map(|f| f.layer).collect();
+        let (lo, hi) = (*layers.iter().min().unwrap(), *layers.iter().max().unwrap());
+        for (face, m) in planned.after.faces.iter().zip(&planned.moving) {
+            if *m {
+                assert!(face.layer > lo && face.layer < hi, "the reversed flap is inside");
+            }
+        }
+    }
+
+    #[test]
+    fn turn_over_mirrors_and_restacks() {
+        let paper = Paper::square(Pose::IDENTITY);
+        let triangle = plan(&paper, Fold::bring(BL, TR), 0).unwrap().after;
+        let over = plan(&triangle, Fold::turn_over(), 1).unwrap();
+        assert!(over.after.image_of(TR).unwrap().distance(DVec2::new(-1.0, 1.0)) < 1e-9);
+        let front = over
+            .after
+            .faces
+            .iter()
+            .find(|f| f.contains(TR) && f.contains(TL))
+            .unwrap();
+        assert_eq!(front.layer, 1);
+        assert!(front.pose.flipped());
     }
 
     #[test]
