@@ -1,0 +1,131 @@
+# The native builds of the game: Linux, Windows and an Android APK, kept as artifacts of the run,
+# attached to a release for the tags `v*`. The web build is in pages.yml.
+name: Builds
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Bevy's system libraries; .cargo/config.toml links with clang and mold.
+      - name: Install the libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev mold clang
+      - name: Test
+        run: cargo test --release
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          mkdir -p bevygami-linux-x86_64
+          strip -o bevygami-linux-x86_64/bevygami target/release/bevygami
+          cp README.md LICENSE bevygami-linux-x86_64/
+          tar -czf bevygami-linux-x86_64.tar.gz bevygami-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bevygami-linux-x86_64
+          path: bevygami-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bevygami-windows-x86_64
+          Copy-Item target/release/bevygami.exe, README.md, LICENSE bevygami-windows-x86_64/
+          Compress-Archive -Path bevygami-windows-x86_64 -DestinationPath bevygami-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bevygami-windows-x86_64
+          path: bevygami-windows-x86_64.zip
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mobile
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install the tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold clang
+          cargo install --locked cargo-apk
+      # The runner has the Android SDK and an NDK.
+      - name: Build the APK
+        env:
+          # The release key, from the secrets of the repository; never in the repository.
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "Signed with the release key"
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/release.jks"
+            export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+          else
+            # Without the secrets, a debug key made here: installable, not for a store.
+            echo "Signed with a debug key"
+            keytool -genkey -v -keystore "$RUNNER_TEMP/debug.keystore" -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/debug.keystore"
+            export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
+          fi
+          cd mobile
+          cargo apk build --release --lib
+          cp "$(find target -name '*.apk' | head -1)" ../bevygami-android-arm64.apk
+          rm -f "$RUNNER_TEMP/release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bevygami-android-arm64
+          path: bevygami-android-arm64.apk
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bevygami-linux-x86_64.tar.gz
+            bevygami-windows-x86_64.zip
+            bevygami-android-arm64.apk

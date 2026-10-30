@@ -1,0 +1,37 @@
+[package]
+name = "bevygami_mobile"
+# cargo-apk needs a version.
+version = "0.1.0"
+edition = "2024"
+description = "Bevygami on Android"
+publish = false
+license = "MIT"
+
+# Its own workspace: cargo-apk does not take a package that is also the root of a workspace.
+[workspace]
+
+[lib]
+name = "bevygami_mobile"
+# The shared library loaded by the Android activity.
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+bevygami = { path = ".." }
+bevy = { version = "0.20.0", default-features = false, features = ["3d", "ui", "bevy_feathers"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { version = "0.20.0", default-features = false, features = ["android-native-activity"] }
+
+[package.metadata.android]
+package = "io.github.sebosp.bevygami"
+apk_name = "bevygami"
+# The debug symbols out: the APK is much smaller.
+strip = "strip"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "Bevygami"

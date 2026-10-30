@@ -1,0 +1,50 @@
+[package]
+name = "bevygami"
+authors = ["Seb Ospina <kraige@gmail.com>"]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Learn origami step by step, a Bevy game"
+repository = "https://github.com/sebosp/bevygami"
+
+[dependencies]
+# No "bevy/dynamic_linking" here: the release binaries are copied to portia-zt, the `dynamic`
+# feature (`cargo dev`) is for the local runs only.
+bevy = { version = "0.20.0", default-features = false, features = [
+    "3d",
+    "ui",
+    "bevy_feathers",
+    # A drag on the paper folds it, see `crate::input`.
+    "mesh_picking",
+    "default_font",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = { version = "0.4", features = ["max_level_debug", "release_max_level_warn"] }
+tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Storage"] }
+bevy = { version = "0.20.0", default-features = false, features = ["webgl2"] }
+
+[features]
+default = []
+# Bevy as a shared library for fast local builds, `cargo dev`. Not for the copied binaries.
+dynamic = ["bevy/dynamic_linking"]
+
+# Small optimization for our code, full optimization for the dependencies.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# trunk build --release uses this profile for the browser build, see index.html.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+strip = "debuginfo"

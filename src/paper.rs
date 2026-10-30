@@ -1,0 +1,498 @@
+//! The paper in 3D: a mesh per face and side, turned around the fold line while it folds, and the
+//! lines of the diagrams drawn on it with gizmos.
+//!
+//! - the creases of the steps done, thin and solid, fainter the older they are;
+//! - the fold line of the current step, dashed (valley) or dash-dot-dot (mountain), breathing;
+//! - the arrow of the fold, full head for a valley, half head for a mountain;
+//! - the dotted outline where the flap lands, the X-ray line of the diagrams.
+use std::f32::consts::{PI, TAU};
+
+use bevy::asset::RenderAssetUsages;
+use bevy::color::Mix;
+use bevy::math::{Affine3A, DVec2};
+use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::prelude::*;
+
+use crate::fold::{Face, FoldKind, Paper, shared_edges};
+use crate::session::{Session, SessionSystems};
+use crate::settings::Settings;
+use crate::theme::{self, ThemeMode, crease_on_paper, hex};
+
+/// The height between two layers of paper.
+pub const LAYER_GAP: f32 = 0.006;
+/// The lines float this far over the paper, under the next layer.
+const LINE_LIFT: f32 = 0.0018;
+
+#[derive(Component)]
+pub struct FaceMesh {
+    pub face: usize,
+}
+
+/// The lines of the creases done.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct CreaseGizmos;
+
+/// The fold line of the current step.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct FoldLineGizmos;
+
+/// The arrows and the landing outline, seen through the paper.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct GuideGizmos;
+
+#[derive(Resource)]
+struct PaperMaterials {
+    front: Handle<StandardMaterial>,
+    back: Handle<StandardMaterial>,
+    front_moving: Handle<StandardMaterial>,
+    back_moving: Handle<StandardMaterial>,
+}
+
+/// Where each face of [`Session::shown`] is now.
+#[derive(Resource, Default)]
+pub struct Placement {
+    pub faces: Vec<Affine3A>,
+    generation: u32,
+}
+
+/// The creases on the edges of the shown faces: face, segment, kind on the front, step.
+#[derive(Resource, Default)]
+struct CreaseMarks(Vec<(usize, DVec2, DVec2, FoldKind, usize)>);
+
+pub struct PaperPlugin;
+
+impl Plugin for PaperPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_gizmo_group::<CreaseGizmos>()
+            .init_gizmo_group::<FoldLineGizmos>()
+            .init_gizmo_group::<GuideGizmos>()
+            .init_resource::<Placement>()
+            .init_resource::<CreaseMarks>()
+            .add_systems(Startup, setup)
+            .add_systems(
+                Update,
+                (
+                    respawn,
+                    place,
+                    breathe,
+                    paint_paper,
+                    draw_creases,
+                    draw_fold_line,
+                    draw_guides,
+                )
+                    .chain()
+                    .after(SessionSystems),
+            );
+    }
+}
+
+fn setup(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut configs: ResMut<GizmoConfigStore>,
+    mut ambient: ResMut<GlobalAmbientLight>,
+) {
+    let paper = |color: Color| StandardMaterial {
+        base_color: color,
+        perceptual_roughness: 0.95,
+        reflectance: 0.15,
+        ..default()
+    };
+    commands.insert_resource(PaperMaterials {
+        front: materials.add(paper(hex("#f2c14e"))),
+        back: materials.add(paper(hex("#f6f3ec"))),
+        front_moving: materials.add(paper(hex("#f2c14e"))),
+        back_moving: materials.add(paper(hex("#f6f3ec"))),
+    });
+    // A light from the front and a weaker one from behind: both sides of the paper read.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 6000.0,
+            ..default()
+        },
+        Transform::from_xyz(1.5, 2.5, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 3500.0,
+            ..default()
+        },
+        Transform::from_xyz(-1.0, -2.0, -4.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    ambient.brightness = 900.0;
+
+    let (config, _) = configs.config_mut::<CreaseGizmos>();
+    config.line.width = 2.0;
+    let (config, _) = configs.config_mut::<FoldLineGizmos>();
+    config.line.width = 4.0;
+    let (config, _) = configs.config_mut::<GuideGizmos>();
+    config.line.width = 2.5;
+    config.depth_bias = -1.0;
+}
+
+/// The front and the back of a face, in paper coordinates.
+fn face_meshes(face: &Face) -> (Mesh, Mesh) {
+    let positions: Vec<[f32; 3]> = face.poly.iter().map(|p| [p.x as f32, p.y as f32, 0.0]).collect();
+    // The paper coordinates as UVs, for a texture later.
+    let uvs: Vec<[f32; 2]> = face
+        .poly
+        .iter()
+        .map(|p| [(p.x as f32 + 1.0) / 2.0, (1.0 - p.y as f32) / 2.0])
+        .collect();
+    let n = positions.len() as u32;
+    let fan: Vec<u32> = (1..n - 1).flat_map(|i| [0, i, i + 1]).collect();
+    let back_fan: Vec<u32> = (1..n - 1).flat_map(|i| [0, i + 1, i]).collect();
+    let mesh = |normal: [f32; 3], indices: Vec<u32>| {
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![normal; n as usize])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.clone())
+            .with_inserted_indices(Indices::U32(indices))
+    };
+    (mesh([0.0, 0.0, 1.0], fan), mesh([0.0, 0.0, -1.0], back_fan))
+}
+
+/// The faces of the shown paper spawned again when the step changes.
+fn respawn(
+    session: Res<Session>,
+    mut placement: ResMut<Placement>,
+    mut marks: ResMut<CreaseMarks>,
+    faces: Query<Entity, With<FaceMesh>>,
+    materials: Res<PaperMaterials>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut commands: Commands,
+) {
+    if placement.generation == session.generation && !placement.faces.is_empty() {
+        return;
+    }
+    placement.generation = session.generation;
+    for entity in &faces {
+        commands.entity(entity).despawn();
+    }
+    let paper = session.shown();
+    let moving = session.plan().map(|p| p.moving.clone()).unwrap_or_default();
+    for (i, face) in paper.faces.iter().enumerate() {
+        let (front, back) = face_meshes(face);
+        let m = moving.get(i).copied().unwrap_or(false);
+        let (front_material, back_material) = if m {
+            (materials.front_moving.clone(), materials.back_moving.clone())
+        } else {
+            (materials.front.clone(), materials.back.clone())
+        };
+        commands.spawn((
+            FaceMesh { face: i },
+            Transform::default(),
+            Visibility::default(),
+            children![
+                (Mesh3d(meshes.add(front)), MeshMaterial3d(front_material)),
+                (Mesh3d(meshes.add(back)), MeshMaterial3d(back_material)),
+            ],
+        ));
+    }
+    placement.faces = vec![Affine3A::IDENTITY; paper.faces.len()];
+    marks.0 = crease_marks(paper);
+}
+
+fn crease_marks(paper: &Paper) -> Vec<(usize, DVec2, DVec2, FoldKind, usize)> {
+    let mut marks = Vec::new();
+    for (i, face) in paper.faces.iter().enumerate() {
+        for crease in &paper.creases {
+            let line = Face {
+                poly: vec![crease.a, crease.b, crease.a],
+                pose: face.pose,
+                layer: 0,
+            };
+            for (a, b) in shared_edges(face, &line) {
+                if !marks
+                    .iter()
+                    .any(|(f, p, q, _, _): &(usize, DVec2, DVec2, FoldKind, usize)| {
+                        *f == i && p.distance(a) < 1e-6 && q.distance(b) < 1e-6
+                    })
+                {
+                    marks.push((i, a, b, crease.kind, crease.step));
+                }
+            }
+        }
+    }
+    marks
+}
+
+/// The isometry of a face at rest, its layer as height.
+fn rest(face: &Face) -> Affine3A {
+    let pose = face.pose;
+    let flip = if pose.flipped() {
+        Quat::from_rotation_x(PI)
+    } else {
+        Quat::IDENTITY
+    };
+    let rotation = Quat::from_rotation_z(pose.angle() as f32) * flip;
+    let translation = Vec3::new(pose.t.x as f32, pose.t.y as f32, face.layer as f32 * LAYER_GAP);
+    Affine3A::from_rotation_translation(rotation, translation)
+}
+
+/// Turns the moving faces around the fold line and lifts them to their layer at the end.
+fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Query<(&FaceMesh, &mut Transform)>) {
+    let paper = session.shown();
+    let angle = session.angle();
+    for (i, face) in paper.faces.iter().enumerate() {
+        let mut affine = rest(face);
+        if let Some(plan) = session.plan()
+            && plan.moving[i]
+            && angle != 0.0
+        {
+            let (a, _) = plan.axis;
+            let a = Vec3::new(a.x as f32, a.y as f32, 0.0);
+            let side = Vec3::new(plan.side.x as f32, plan.side.y as f32, 0.0);
+            // The moving side turns up (valley) or down (mountain).
+            let axis = side.cross(Vec3::Z).normalize();
+            let signed = if plan.fold.kind == FoldKind::Valley {
+                angle
+            } else {
+                -angle
+            };
+            let turn = Affine3A::from_translation(a)
+                * Affine3A::from_axis_angle(axis, signed)
+                * Affine3A::from_translation(-a);
+            // Half a turn mirrors the height of the layer, it ends at its new layer.
+            let z_before = face.layer as f32 * LAYER_GAP;
+            let z_after = plan.landed.faces[i].layer as f32 * LAYER_GAP;
+            let lift = Affine3A::from_translation(Vec3::Z * (angle / PI) * (z_after + z_before));
+            affine = lift * turn * affine;
+        }
+        if let Some(slot) = placement.faces.get_mut(i) {
+            *slot = affine;
+        }
+    }
+    for (face, mut transform) in &mut faces {
+        if let Some(affine) = placement.faces.get(face.face) {
+            *transform = Transform::from_matrix(Mat4::from(*affine));
+        }
+    }
+}
+
+/// From 0 to 1 and back, every 2.4 seconds; 1 when the motion is reduced.
+pub fn breath(time: &Time, settings: &Settings) -> f32 {
+    if settings.reduce_motion {
+        1.0
+    } else {
+        0.5 + 0.5 * (time.elapsed_secs() * TAU / 2.4).sin()
+    }
+}
+
+/// The flap that will move glows a little, in time with the fold line.
+fn breathe(
+    time: Res<Time>,
+    settings: Res<Settings>,
+    session: Res<Session>,
+    paper_materials: Res<PaperMaterials>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let front = hex(settings.paper.hex());
+    let back = hex("#f6f3ec");
+    let glow = if session.at_rest() && !session.finished() {
+        0.10 * breath(&time, &settings)
+    } else {
+        0.0
+    };
+    let accent = theme::scene(ThemeMode::Light).accent;
+    if let Some(mut m) = materials.get_mut(&paper_materials.front_moving) {
+        m.base_color = front.mix(&Color::WHITE, glow);
+        m.emissive = LinearRgba::from(accent) * glow * 0.6;
+    }
+    if let Some(mut m) = materials.get_mut(&paper_materials.back_moving) {
+        m.base_color = back.mix(&accent, glow * 0.4);
+    }
+}
+
+/// The front color follows the settings.
+fn paint_paper(
+    settings: Res<Settings>,
+    paper_materials: Res<PaperMaterials>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    if let Some(mut m) = materials.get_mut(&paper_materials.front) {
+        m.base_color = hex(settings.paper.hex());
+    }
+}
+
+fn to_world(affine: &Affine3A, p: DVec2) -> Vec3 {
+    affine.transform_point3(Vec3::new(p.x as f32, p.y as f32, 0.0))
+}
+
+/// A crease on both sides of its face: on the back, a mountain is a valley.
+fn both_sides(affine: &Affine3A, a: DVec2, b: DVec2, kind: FoldKind, mut draw: impl FnMut(Vec3, Vec3, FoldKind)) {
+    let normal = affine.transform_vector3(Vec3::Z) * LINE_LIFT;
+    let (pa, pb) = (to_world(affine, a), to_world(affine, b));
+    draw(pa + normal, pb + normal, kind);
+    draw(pa - normal, pb - normal, kind.opposite());
+}
+
+fn draw_creases(
+    session: Res<Session>,
+    placement: Res<Placement>,
+    marks: Res<CreaseMarks>,
+    mut gizmos: Gizmos<CreaseGizmos>,
+) {
+    let step = session.step;
+    for (face, a, b, kind, made) in &marks.0 {
+        let Some(affine) = placement.faces.get(*face) else {
+            continue;
+        };
+        // The last fold done reads best, the older ones fade.
+        let age = step.saturating_sub(*made + 1) as f32;
+        let alpha = (0.6 - 0.1 * age).max(0.28);
+        both_sides(affine, *a, *b, *kind, |p, q, kind| {
+            gizmos.line(p, q, crease_on_paper(kind).with_alpha(alpha));
+        });
+    }
+}
+
+/// Dashes along a segment: the pattern of lengths, on and off in turns.
+fn dashes(p: Vec3, q: Vec3, pattern: &[f32], mut draw: impl FnMut(Vec3, Vec3)) {
+    let length = p.distance(q);
+    if length < 1e-6 {
+        return;
+    }
+    let dir = (q - p) / length;
+    // Centered: the pattern is cut evenly at both ends.
+    let period: f32 = pattern.iter().sum();
+    let mut s = -((length % period) / 2.0);
+    let mut i = 0;
+    while s < length {
+        let len = pattern[i % pattern.len()];
+        if i % 2 == 0 {
+            let (from, to) = (s.max(0.0), (s + len).min(length));
+            if to > from {
+                draw(p + dir * from, p + dir * to);
+            }
+        }
+        s += len;
+        i += 1;
+    }
+}
+
+const VALLEY_DASH: [f32; 2] = [0.07, 0.045];
+const MOUNTAIN_DASH: [f32; 6] = [0.07, 0.03, 0.012, 0.03, 0.012, 0.03];
+
+fn draw_fold_line(
+    time: Res<Time>,
+    settings: Res<Settings>,
+    session: Res<Session>,
+    placement: Res<Placement>,
+    mut gizmos: Gizmos<FoldLineGizmos>,
+) {
+    let Some(plan) = session.plan() else {
+        return;
+    };
+    let alpha = 0.55 + 0.45 * breath(&time, &settings);
+    for chord in &plan.chords {
+        let Some(affine) = placement.faces.get(chord.face) else {
+            continue;
+        };
+        both_sides(affine, chord.a, chord.b, chord.kind, |p, q, kind| {
+            let pattern: &[f32] = if kind == FoldKind::Valley {
+                &VALLEY_DASH
+            } else {
+                &MOUNTAIN_DASH
+            };
+            let color = crease_on_paper(kind).with_alpha(alpha);
+            dashes(p, q, pattern, |a, b| gizmos.line(a, b, color));
+        });
+    }
+}
+
+/// The arrow from the moving point to where it lands, and the outline of the landed flap.
+fn draw_guides(time: Res<Time>, settings: Res<Settings>, session: Res<Session>, mut gizmos: Gizmos<GuideGizmos>) {
+    let Some(plan) = session.plan() else {
+        return;
+    };
+    if !session.at_rest() {
+        return;
+    }
+    let scene = theme::scene(settings.theme);
+    let alpha = 0.6 + 0.4 * breath(&time, &settings);
+    let top = (session.shown().max_layer() + 1) as f32 * LAYER_GAP;
+    if settings.landing {
+        // The edges of the landed flap that no other moving face shares: its outline.
+        let moving: Vec<&Face> = plan
+            .landed
+            .faces
+            .iter()
+            .zip(&plan.moving)
+            .filter(|(_, m)| **m)
+            .map(|(f, _)| f)
+            .collect();
+        for (k, face) in moving.iter().enumerate() {
+            let n = face.poly.len();
+            for e in 0..n {
+                let (a, b) = (face.poly[e], face.poly[(e + 1) % n]);
+                let edge = Face {
+                    poly: vec![a, b, a],
+                    pose: face.pose,
+                    layer: 0,
+                };
+                let shared: f64 = moving
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != k)
+                    .flat_map(|(_, g)| shared_edges(&edge, g))
+                    .map(|(p, q)| p.distance(q))
+                    .sum();
+                if shared > a.distance(b) - 1e-6 {
+                    continue;
+                }
+                let (pa, pb) = (face.pose.apply(a), face.pose.apply(b));
+                let z = (face.layer + 1) as f32 * LAYER_GAP;
+                let p = Vec3::new(pa.x as f32, pa.y as f32, z);
+                let q = Vec3::new(pb.x as f32, pb.y as f32, z);
+                dashes(p, q, &[0.012, 0.03], |a, b| {
+                    gizmos.line(a, b, scene.dim.with_alpha(0.9))
+                });
+            }
+        }
+    }
+    if settings.arrows
+        && let (Some(from), Some(to)) = (
+            plan.before.image_of(plan.fold.moving),
+            plan.landed.image_of(plan.fold.moving),
+        )
+    {
+        let (from, to) = (
+            Vec3::new(from.x as f32, from.y as f32, top),
+            Vec3::new(to.x as f32, to.y as f32, top),
+        );
+        let span = from.distance(to);
+        // An arc over the paper for a valley, under it for a mountain; the ends stay off the
+        // points.
+        let lift = if plan.fold.kind == FoldKind::Valley { 1.0 } else { -1.0 } * 0.3 * span;
+        // Bent sideways too, along the fold line: a curve even seen from the front.
+        let (_, d) = plan.axis;
+        let along = Vec3::new(d.x as f32, d.y as f32, 0.0) * 0.18 * span;
+        let point = |s: f32| from.lerp(to, s) + (Vec3::Z * lift + along) * (PI * s).sin();
+        let (s0, s1) = (0.06, 0.94);
+        let segments = 32;
+        let color = scene.guide.with_alpha(alpha);
+        let points: Vec<Vec3> = (0..=segments)
+            .map(|i| point(s0 + (s1 - s0) * i as f32 / segments as f32))
+            .collect();
+        gizmos.linestrip(points.iter().copied(), color);
+        let head = |tip: Vec3, before: Vec3, full: bool, gizmos: &mut Gizmos<GuideGizmos>| {
+            let back = (before - tip).normalize_or_zero();
+            let across = back.cross(Vec3::Z).normalize_or_zero();
+            let size = 0.09;
+            gizmos.line(tip, tip + (back * 0.9 + across * 0.45) * size, color);
+            if full {
+                gizmos.line(tip, tip + (back * 0.9 - across * 0.45) * size, color);
+            }
+        };
+        let valley = plan.fold.kind == FoldKind::Valley;
+        head(points[segments], points[segments - 3], valley, &mut gizmos);
+        if plan.fold.unfold {
+            // Fold and unfold: the arrow goes and comes back, a head at both ends.
+            head(points[0], points[3], valley, &mut gizmos);
+        }
+    }
+}

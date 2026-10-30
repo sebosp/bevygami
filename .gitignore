@@ -1,0 +1,9 @@
+/target
+/dist
+mobile/build/
+mobile/target/
+
+# Signing keys stay out of the repository.
+*.jks
+*.jks.b64
+*.keystore
