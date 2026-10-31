@@ -31,8 +31,9 @@ pub struct Lesson {
     pub about: &'static str,
     /// The square shown as a diamond.
     pub diamond: bool,
-    /// The colored side up at the start; the traditional models start white side up, so the
-    /// color ends outside.
+    /// The colored side up at the start. Most traditional models start white side up, so the color
+    /// ends outside; the bird base and the crane colored side up: the petal folds turn the inside of
+    /// the preliminary base out, and the color with it.
     pub colored_up: bool,
     pub steps: Vec<Step>,
     /// Said when the last fold is done.
@@ -393,14 +394,14 @@ const K: f64 = 2.0 - SQRT_2;
 /// the front quadrant (`TR`) to the book folds, and from the corners of the side quadrants on
 /// them, the hinge of the petal, and the book folds opened flat between the kite creases and the
 /// edges. At a kite tip four creases meet: 112.5° + 67.5° = 180°, Kawasaki holds; the book fold is
-/// a mountain from the colored side, the kites and the hinge valleys, Maekawa holds (3 V, 1 M).
+/// a valley from the colored side, the kites and the hinge mountains, Maekawa holds (3 M, 1 V).
 const BIRD_FRONT: Collapse = Collapse {
     fold: &[
-        (TR, p(K, 0.0), FoldKind::Valley),
-        (TR, p(0.0, K), FoldKind::Valley),
-        (TL, p(0.0, K), FoldKind::Valley),
-        (BR, p(K, 0.0), FoldKind::Valley),
-        (p(K, 0.0), p(0.0, K), FoldKind::Valley),
+        (TR, p(K, 0.0), FoldKind::Mountain),
+        (TR, p(0.0, K), FoldKind::Mountain),
+        (TL, p(0.0, K), FoldKind::Mountain),
+        (BR, p(K, 0.0), FoldKind::Mountain),
+        (p(K, 0.0), p(0.0, K), FoldKind::Mountain),
     ],
     flat: &[(p(K, 0.0), p(1.0, 0.0)), (p(0.0, K), p(0.0, 1.0))],
     mirror: false,
@@ -409,11 +410,11 @@ const BIRD_FRONT: Collapse = Collapse {
 /// The same on the back quadrant (`BL`).
 const BIRD_BACK: Collapse = Collapse {
     fold: &[
-        (BL, p(-K, 0.0), FoldKind::Valley),
-        (BL, p(0.0, -K), FoldKind::Valley),
-        (TL, p(-K, 0.0), FoldKind::Valley),
-        (BR, p(0.0, -K), FoldKind::Valley),
-        (p(-K, 0.0), p(0.0, -K), FoldKind::Valley),
+        (BL, p(-K, 0.0), FoldKind::Mountain),
+        (BL, p(0.0, -K), FoldKind::Mountain),
+        (TL, p(-K, 0.0), FoldKind::Mountain),
+        (BR, p(0.0, -K), FoldKind::Mountain),
+        (p(-K, 0.0), p(0.0, -K), FoldKind::Mountain),
     ],
     flat: &[(p(-K, 0.0), p(-1.0, 0.0)), (p(0.0, -K), p(0.0, -1.0))],
     mirror: false,
@@ -476,7 +477,7 @@ fn bird_base() -> Lesson {
         title: "11. The bird base",
         about: "Kite creases and petal folds on both sides of the preliminary base: the base of the crane, the flapping bird and many more.",
         diamond: true,
-        colored_up: false,
+        colored_up: true,
         steps,
         done: "The bird base: two long petals up, two flaps down that become the neck and the tail of the crane.",
     }
@@ -519,7 +520,8 @@ fn narrowing() -> Vec<(DVec2, DVec2, FoldKind)> {
     let d4 = bounce(d3, CENTER, kite_tip);
     let b = hit(e, d4, kite_tip, p(-1.0, K - 1.0));
     use FoldKind::{Mountain as M, Valley as V};
-    vec![(TL, a, V), (a, c, V), (c, d, M), (d, e, V), (e, b, M), (b, TL, M)]
+    // From the colored side, up for the crane.
+    vec![(TL, a, M), (a, c, M), (c, d, V), (d, e, M), (e, b, V), (b, TL, V)]
 }
 
 /// The four leg narrowings, the front of the left leg turned onto the others: the front of the
@@ -608,7 +610,7 @@ fn crane() -> Lesson {
         title: "12. The crane",
         about: "The orizuru, the traditional crane: the bird base, narrowed legs reversed into a neck and a tail, a head, the wings down.",
         diamond: true,
-        colored_up: false,
+        colored_up: true,
         steps,
         done: "A crane. Pull the wings apart gently and the body puffs up. Fold a thousand and make a wish.",
     }
@@ -644,14 +646,16 @@ static SINK_CREASES: std::sync::LazyLock<Vec<(DVec2, DVec2, FoldKind)>> = std::s
         }
     };
     let corners = [p(SINK, 0.0), p(0.0, SINK), p(-SINK, 0.0), p(0.0, -SINK)];
+    // As seen from the white side, up: the fold of a sheet turned over turns them back.
+    let seen = |kind: FoldKind| kind.opposite();
     let mut creases = Vec::new();
     for k in 0..4 {
-        creases.push((corners[k], corners[(k + 1) % 4], FoldKind::Mountain));
+        creases.push((corners[k], corners[(k + 1) % 4], seen(FoldKind::Mountain)));
         // The book fold and the diagonal inside the square, the other way.
         let diagonal = (corners[k] + corners[(k + 1) % 4]) / 2.0;
         for end in [corners[k], diagonal] {
             if let Some(kind) = kind_now(CENTER, end) {
-                creases.push((CENTER, end, kind.opposite()));
+                creases.push((CENTER, end, seen(kind.opposite())));
             }
         }
     }
@@ -797,7 +801,7 @@ mod tests {
         // Two corners at the tip of the petals, two at the bottom.
         let up = [BL, BR, TL, TR]
             .iter()
-            .filter(|c| last.image_of(DVec2::new(-c.x, c.y)).unwrap().y > 0.5)
+            .filter(|c| last.image_of(**c).unwrap().y > 0.5)
             .count();
         assert_eq!(up, 2);
         // Flat-foldable at every vertex inside the sheet, the creases that are folded.
@@ -810,7 +814,8 @@ mod tests {
     fn the_crane_has_a_neck_a_tail_and_wings_down() {
         let lesson = crane();
         let (_, last) = plan_all(lesson.start(), &lesson.folds()).unwrap();
-        let at = |c: DVec2| last.image_of(DVec2::new(-c.x, c.y)).unwrap();
+        // Colored side up: the corners are where the lesson names them.
+        let at = |c: DVec2| last.image_of(c).unwrap();
         // The tail up on the right, the head hooked down on the left of the neck.
         let (tail, head) = (at(BR), at(TL));
         assert!(tail.x > 0.35 && tail.y > 0.0, "tail at {tail}");

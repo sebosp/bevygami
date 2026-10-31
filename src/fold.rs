@@ -265,11 +265,12 @@ pub enum Style {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Collapse {
     /// The creases that fold, in paper coordinates, mountain or valley seen from the front side
-    /// as in a crease pattern.
+    /// as in a crease pattern; for a sheet turned over (`mirror`), from the back, the side up.
     pub fold: &'static [(DVec2, DVec2, FoldKind)],
     /// The creases that open flat.
     pub flat: &'static [(DVec2, DVec2)],
-    /// The sheet mirrored by `x ↦ -x`, see [`Fold::mirrored`].
+    /// The sheet mirrored by `x ↦ -x`, see [`Fold::mirrored`]: turned over, its creases are
+    /// mountain where they were valley.
     pub mirror: bool,
 }
 
@@ -1101,7 +1102,10 @@ fn plan_collapse(paper: &Paper, fold: Fold, collapse: Collapse, step: usize) -> 
     let folds: Vec<(DVec2, DVec2, FoldKind)> = collapse
         .fold
         .iter()
-        .map(|(a, b, k)| (collapse.point(*a), collapse.point(*b), *k))
+        .map(|(a, b, k)| {
+            let k = if collapse.mirror { k.opposite() } else { *k };
+            (collapse.point(*a), collapse.point(*b), k)
+        })
         .collect();
     let flats: Vec<(DVec2, DVec2)> = collapse
         .flat

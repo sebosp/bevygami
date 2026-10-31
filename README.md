@@ -24,6 +24,9 @@ browser.
 | 13. The sink fold    | the open sink: the top of the preliminary base pushed inside     |
 
 The traditional models and the preliminary base start white side up, so the color ends outside.
+The bird base and the crane start colored side up: their preliminary base is white outside, and
+the petal folds turn its colored inside out (the sheet turned over mirrors the collapse creases and
+swaps their mountains and valleys, so the same folds read the same either way).
 
 ## How the lines read
 
