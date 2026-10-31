@@ -91,7 +91,11 @@ where opening the body flat would unfold the neck again. The layers next to the 
 (40° at most), the spine of the flap swings exactly, and wherever two faces the paper joins come
 apart, the edge goes to the middle of the two and the difference fades into each face: the paper
 flexes near the edge, as in the hands. The faces of those steps are meshed finely with the same
-points on both sides of every edge, so nothing tears; a test checks it.
+points on both sides of every edge, so nothing tears; a test checks it. The collapses bend too:
+each face first goes from where it was to where it lands on its own, then the faces that move are
+brought together, each refitted as a rigid piece onto the middle of where it and its neighbors put
+its edges (200 rounds a frame), and what is left apart bends. The petal folds go from 0.9 apart
+to 0.05; the leg narrowings fold over in one piece and do not need it.
 
 A **collapse** folds several creases at once, as the CP editors fold a crease pattern (the petal
 folds of the bird base, the leg narrowings of the crane): the step lists the creases that fold

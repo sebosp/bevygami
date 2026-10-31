@@ -7,7 +7,7 @@
 //! The faces are meshed finely for it, with the same points on both sides of every edge.
 use std::collections::HashMap;
 
-use bevy::math::{DVec2, DVec3};
+use bevy::math::{DMat3, DVec2, DVec3};
 
 use crate::fold::{Face, Paper, cross};
 
@@ -169,6 +169,86 @@ fn samples(face: &Face, corners: &[DVec2]) -> Samples {
         boundary,
         points,
         triangles,
+    }
+}
+
+/// Where a face is: the point `u` of the paper at `m (u, 0) + t`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Place {
+    pub m: DMat3,
+    pub t: DVec3,
+}
+
+impl Place {
+    pub fn apply(&self, u: DVec2) -> DVec3 {
+        self.m * DVec3::new(u.x, u.y, 0.0) + self.t
+    }
+}
+
+/// The orthogonal factor of `m` (polar decomposition), by Newton's iteration.
+fn orthogonal(mut m: DMat3) -> DMat3 {
+    for _ in 0..12 {
+        let inv = m.inverse().transpose();
+        if !inv.is_finite() {
+            break;
+        }
+        m = (m + inv) * 0.5;
+    }
+    m
+}
+
+impl Sheet {
+    /// The faces that move brought together where the paper joins them: each fitted, as a rigid
+    /// piece, onto the middle of where it and its neighbors put its edges, again and again. The
+    /// faces that do not move hold the rest. What is left apart, the paper bends.
+    pub fn relax(&self, moving: &[bool], places: &mut [Place], rounds: usize) {
+        for _ in 0..rounds {
+            let mut seams: HashMap<(i64, i64), (DVec3, f64)> = HashMap::new();
+            for (f, place) in self.faces.iter().zip(places.iter()) {
+                for u in &f.boundary {
+                    let seam = seams.entry(key(*u)).or_insert((DVec3::ZERO, 0.0));
+                    seam.0 += place.apply(*u);
+                    seam.1 += 1.0;
+                }
+            }
+            for (i, f) in self.faces.iter().enumerate() {
+                if !moving[i] {
+                    continue;
+                }
+                let targets: Vec<DVec3> = f
+                    .boundary
+                    .iter()
+                    .map(|u| {
+                        let (sum, count) = seams[&key(*u)];
+                        sum / count
+                    })
+                    .collect();
+                let k = targets.len() as f64;
+                let (uc, yc) = (f.boundary.iter().sum::<DVec2>() / k, targets.iter().sum::<DVec3>() / k);
+                // The best turn: the cross covariance, with the normal kept as it was.
+                let mut m = DMat3::ZERO;
+                for (u, y) in f.boundary.iter().zip(&targets) {
+                    let d = *u - uc;
+                    let x = DVec3::new(d.x, d.y, 0.0);
+                    m += DMat3::from_cols(*y - yc, DVec3::ZERO, DVec3::ZERO)
+                        * DMat3::from_cols(x, DVec3::ZERO, DVec3::ZERO).transpose();
+                }
+                let scale = f
+                    .boundary
+                    .iter()
+                    .map(|u| u.distance_squared(uc))
+                    .sum::<f64>()
+                    .max(1e-12);
+                m += DMat3::from_cols(DVec3::ZERO, DVec3::ZERO, places[i].m.z_axis * scale);
+                let r = orthogonal(m);
+                if r.determinant() > 0.5 {
+                    places[i] = Place {
+                        m: r,
+                        t: yc - r * DVec3::new(uc.x, uc.y, 0.0),
+                    };
+                }
+            }
+        }
     }
 }
 

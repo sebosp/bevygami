@@ -14,7 +14,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use std::sync::Arc;
 
-use crate::bend::{Bent, Samples, Sheet};
+use crate::bend::{Bent, Place, Samples, Sheet};
 use crate::fold::{Face, FoldKind, Paper, Planned, Style, shared_edges};
 use crate::motion::Reverse;
 use crate::session::{Session, SessionSystems};
@@ -238,9 +238,7 @@ fn respawn(
     }
     let paper = session.shown();
     let moving = session.plan().map(|p| p.moving.clone()).unwrap_or_default();
-    let bends = session
-        .plan()
-        .is_some_and(|p| p.reverse.as_ref().is_some_and(|r| r.bending));
+    let bends = session.plan().is_some_and(bends);
     placement.sheet = bends.then(|| Arc::new(Sheet::new(paper)));
     placement.bent = None;
     for (i, face) in paper.faces.iter().enumerate() {
@@ -360,17 +358,25 @@ fn place(
         }
     }
     // Where stiff paper would tear, it bends.
-    placement.bent = match (session.plan(), &placement.sheet) {
-        (Some(plan), Some(sheet)) if session.t != 0.0 => plan.reverse.as_ref().map(|reverse| {
-            let pose = reverse.at(session.t as f64);
-            let faces = &plan.before.faces;
-            sheet.bend(&|i, u| {
-                let q = faces[i].pose.apply(u) - reverse.vertex;
-                pose.of(reverse.parts[i]) * DVec3::new(q.x, q.y, 0.0)
-            })
-        }),
+    let bent = match (session.plan(), &placement.sheet) {
+        (Some(plan), Some(sheet)) if session.t != 0.0 => bend(plan, sheet, session.t),
         _ => None,
     };
+    // A collapse goes where the faces were brought together, its layers on the way.
+    if let (Some((_, Some(places))), Some(plan)) = (&bent, session.plan()) {
+        let t = session.t;
+        for (i, place) in places.iter().enumerate() {
+            if !plan.moving[i] {
+                continue;
+            }
+            let z = (plan.before.faces[i].layer as f32 * (1.0 - t) + plan.landed.faces[i].layer as f32 * t) * LAYER_GAP;
+            let affine = Affine3A::from_mat3_translation(place.m.as_mat3(), place.t.as_vec3() + Vec3::Z * z);
+            if let Some(slot) = placement.faces.get_mut(i) {
+                *slot = affine;
+            }
+        }
+    }
+    placement.bent = bent.map(|(bent, _)| bent);
     for (mut face, mut transform) in &mut faces {
         let Some(affine) = placement.faces.get(face.face) else {
             continue;
@@ -401,6 +407,57 @@ fn place(
         }
         face.bent = bends;
     }
+}
+
+/// The step bends the paper: a reverse fold stiff paper cannot do, or a collapse, whose faces
+/// each go their own way from where they were to where they land.
+fn bends(plan: &Planned) -> bool {
+    plan.fold.style == Style::Collapse || plan.reverse.as_ref().is_some_and(|r| r.bending)
+}
+
+/// How the faces of a collapse go, without their layers: each from where it was to where it lands,
+/// brought together where the paper joins them.
+fn collapse_places(plan: &Planned, sheet: &Sheet, t: f32) -> Vec<Place> {
+    let faces = &plan.before.faces;
+    let flat = |f: &Face| Face { layer: 0, ..f.clone() };
+    let mut places: Vec<Place> = (0..faces.len())
+        .map(|i| {
+            let affine = if plan.moving[i] {
+                collapse_motion(&flat(&faces[i]), &flat(&plan.landed.faces[i]), plan.turns[i], t)
+            } else {
+                rest(&flat(&faces[i]))
+            };
+            Place {
+                m: affine.matrix3.as_dmat3(),
+                t: affine.translation.as_dvec3(),
+            }
+        })
+        .collect();
+    sheet.relax(&plan.moving, &mut places, RELAX_ROUNDS);
+    places
+}
+
+/// The rounds of [`Sheet::relax`] for a collapse, each frame.
+const RELAX_ROUNDS: usize = 200;
+
+/// Where the paper bends at `t`: the faces placed without their layers, the seams met; and for a
+/// collapse, where its faces are.
+fn bend(plan: &Planned, sheet: &Sheet, t: f32) -> Option<(Bent, Option<Vec<Place>>)> {
+    let faces = &plan.before.faces;
+    if let Some(reverse) = &plan.reverse {
+        let pose = reverse.at(t as f64);
+        let bent = sheet.bend(&|i, u| {
+            let q = faces[i].pose.apply(u) - reverse.vertex;
+            pose.of(reverse.parts[i]) * DVec3::new(q.x, q.y, 0.0)
+        });
+        return Some((bent, None));
+    }
+    if plan.fold.style != Style::Collapse {
+        return None;
+    }
+    let places = collapse_places(plan, sheet, t);
+    let bent = sheet.bend(&|i, u| places[i].apply(u));
+    Some((bent, Some(places)))
 }
 
 /// A face of a reverse fold on its way, see [`Reverse`]: turned around the vertex, in the middle
@@ -732,5 +789,49 @@ fn draw_guides(time: Res<Time>, settings: Res<Settings>, session: Res<Session>, 
             // Fold and unfold: the arrow goes and comes back, a head at both ends.
             head(points[0], points[3], valley, &mut gizmos);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fold::plan_all;
+
+    /// The collapses keep every edge joined: the seams meet wherever the faces go.
+    #[test]
+    fn collapses_bend_without_tearing() {
+        let mut collapses = 0;
+        for lesson in crate::lessons::all() {
+            let (plans, _) = plan_all(lesson.start(), &lesson.folds()).expect("folds");
+            for (k, plan) in plans.iter().enumerate() {
+                if plan.fold.style != Style::Collapse {
+                    continue;
+                }
+                collapses += 1;
+                let sheet = Sheet::new(&plan.before);
+                let faces = &plan.before.faces;
+                let mut worst = 0.0f64;
+                for t in [0.1, 0.3, 0.5, 0.7, 0.9] {
+                    let (bent, places) = bend(plan, &sheet, t).expect("a collapse bends");
+                    let places = places.expect("the faces of a collapse");
+                    for c in bent.boundary.iter().flatten() {
+                        worst = worst.max(c.length());
+                    }
+                    let place = |i: usize, u: DVec2| places[i].apply(u) + bent.at(&sheet, i, u);
+                    for i in 0..faces.len() {
+                        for j in i + 1..faces.len() {
+                            for (p, q) in shared_edges(&faces[i], &faces[j]) {
+                                for x in [p, q] {
+                                    let gap = place(i, x).distance(place(j, x));
+                                    assert!(gap < 1e-4, "{} step {}: torn by {gap} at t {t}", lesson.title, k + 1);
+                                }
+                            }
+                        }
+                    }
+                }
+                eprintln!("{} step {}: bends by {worst:.3} at most", lesson.title, k + 1);
+            }
+        }
+        assert_eq!(collapses, 8);
     }
 }
