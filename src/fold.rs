@@ -149,12 +149,29 @@ pub struct Paper {
 impl Paper {
     /// The square `[-1, 1]²`, placed by `pose` (a diamond is the square turned by 45°).
     pub fn square(pose: Pose) -> Paper {
-        let poly = vec![
-            DVec2::new(-1.0, -1.0),
-            DVec2::new(1.0, -1.0),
-            DVec2::new(1.0, 1.0),
-            DVec2::new(-1.0, 1.0),
-        ];
+        Paper::sheet(
+            vec![
+                DVec2::new(-1.0, -1.0),
+                DVec2::new(1.0, -1.0),
+                DVec2::new(1.0, 1.0),
+                DVec2::new(-1.0, 1.0),
+            ],
+            pose,
+        )
+    }
+
+    /// The regular hexagon of circumradius `r` around the origin, corners left and right, flat on
+    /// top and bottom.
+    pub fn hexagon(r: f64, pose: Pose) -> Paper {
+        let corner = |k: u32| {
+            let a = std::f64::consts::FRAC_PI_3 * k as f64;
+            DVec2::new(r * a.cos(), r * a.sin())
+        };
+        Paper::sheet((0..6).map(corner).collect(), pose)
+    }
+
+    /// A sheet of the convex polygon `poly`, counterclockwise.
+    pub fn sheet(poly: Vec<DVec2>, pose: Pose) -> Paper {
         Paper {
             faces: vec![Face { poly, pose, layer: 0 }],
             creases: Vec::new(),
@@ -1283,6 +1300,19 @@ fn plan_collapse(paper: &Paper, fold: Fold, collapse: Collapse, step: usize) -> 
                     b: q,
                     kind: *kind,
                 });
+            } else if flats.iter().any(|(a, b)| on_segment((*a, *b), p, q)) {
+                // A crease that opens: drawn as it was folded.
+                let kind = paper
+                    .creases
+                    .iter()
+                    .find(|c| on_segment((c.a, c.b), p, q))
+                    .map_or(FoldKind::Valley, |c| c.kind);
+                chords.push(Chord {
+                    face: i,
+                    a: p,
+                    b: q,
+                    kind,
+                });
             }
         }
     }
@@ -1294,8 +1324,11 @@ fn plan_collapse(paper: &Paper, fold: Fold, collapse: Collapse, step: usize) -> 
         .map(|i| before.faces[i].centroid())
         .unwrap_or(grip);
     let axis = folds
-        .first()
-        .map(|(a, b, _)| {
+        .iter()
+        .map(|(a, b, _)| (a, b))
+        .chain(flats.iter().map(|(a, b)| (a, b)))
+        .next()
+        .map(|(a, b)| {
             let pose = before.faces[before.face_at(*a).unwrap_or(root)].pose;
             (pose.apply(*a), (pose.m * (*b - *a)).normalize_or_zero())
         })

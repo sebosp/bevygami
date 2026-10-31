@@ -830,6 +830,6 @@ mod tests {
                 eprintln!("{} step {}: bends by {worst:.3} at most", lesson.title, k + 1);
             }
         }
-        assert_eq!(collapses, 9);
+        assert_eq!(collapses, 11, "and the wings of the Webb mirror open");
     }
 }

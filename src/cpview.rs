@@ -147,8 +147,14 @@ fn draw(
     // starts white side up (the creases then as seen from that side).
     let lesson = session.current();
     let half = SIZE as f32 / 2.0;
-    let s = (half - 8.0) / if lesson.diamond { std::f32::consts::SQRT_2 } else { 1.0 };
     let m = lesson.start_pose().m;
+    let start = lesson.start();
+    let reach = start.faces[0]
+        .image()
+        .iter()
+        .map(|p| p.x.abs().max(p.y.abs()))
+        .fold(0.0, f64::max);
+    let s = (half - 8.0) / reach as f32;
     let (a, b, c, d) = (
         m.x_axis.x as f32,
         m.y_axis.x as f32,
@@ -160,9 +166,7 @@ fn draw(
     let seen = |kind: FoldKind| if lesson.colored_up { kind } else { kind.opposite() };
     let width = settings.lines.scale();
     let sheet = Face {
-        poly: crate::fold::Paper::square(crate::fold::Pose::IDENTITY).faces[0]
-            .poly
-            .clone(),
+        poly: start.faces[0].poly.clone(),
         pose: crate::fold::Pose::IDENTITY,
         layer: 0,
     };
@@ -188,11 +192,11 @@ fn draw(
     };
     let edge = hex("#6b6f80");
     let corners = &sheet.poly;
-    for i in 0..4 {
+    for i in 0..corners.len() {
         line(
             &mut pixmap,
             to_px(corners[i]),
-            to_px(corners[(i + 1) % 4]),
+            to_px(corners[(i + 1) % corners.len()]),
             edge,
             1.5,
             None,

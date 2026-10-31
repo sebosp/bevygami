@@ -22,6 +22,7 @@ browser.
 | 11. The bird base    | precreases, turning over, the petal folds (collapses)            |
 | 12. The crane        | the orizuru: legs narrowed, neck and tail reversed, head, wings  |
 | 13. The sink fold    | the open sink: the top of the preliminary base pushed inside     |
+| 14. The Webb mirror  | a hexagonal sheet: the wings of the James Webb mirror folded back for launch and deployed |
 
 The traditional models and the preliminary base start white side up, so the color ends outside.
 The bird base and the crane start colored side up: their preliminary base is white outside, and

@@ -20,6 +20,18 @@ const fn p(x: f64, y: f64) -> DVec2 {
     DVec2::new(x, y)
 }
 
+/// The shape of the sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// The square `[-1, 1]²`.
+    Square,
+    /// The regular hexagon of circumradius [`HEXAGON`], corners left and right.
+    Hexagon,
+}
+
+/// The circumradius of the hexagonal sheet: about the area of the square.
+pub const HEXAGON: f64 = 1.2;
+
 pub struct Step {
     pub fold: Fold,
     pub text: &'static str,
@@ -29,7 +41,9 @@ pub struct Lesson {
     pub title: &'static str,
     /// What the lesson teaches, under the title.
     pub about: &'static str,
-    /// The square shown as a diamond.
+    /// The sheet the lesson folds.
+    pub shape: Shape,
+    /// The sheet shown as a diamond (turned by 45°).
     pub diamond: bool,
     /// The colored side up at the start. Most traditional models start white side up, so the color
     /// ends outside; the bird base and the crane colored side up: the petal folds turn the inside of
@@ -42,7 +56,10 @@ pub struct Lesson {
 
 impl Lesson {
     pub fn start(&self) -> Paper {
-        Paper::square(self.start_pose())
+        match self.shape {
+            Shape::Square => Paper::square(self.start_pose()),
+            Shape::Hexagon => Paper::hexagon(HEXAGON, self.start_pose()),
+        }
     }
 
     /// The sheet turned as a diamond, and over (mirrored by `x ↦ -x`) when the white side is up.
@@ -107,6 +124,7 @@ pub fn all() -> Vec<Lesson> {
         bird_base(),
         crane(),
         sink(),
+        webb_mirror(),
     ]
 }
 
@@ -114,6 +132,7 @@ fn diagonal_fold() -> Lesson {
     Lesson {
         title: "1. The diagonal fold",
         about: "The valley fold: the paper comes toward you, the crease sinks like a valley. Diagrams draw it dashed.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: true,
         steps: vec![
@@ -134,6 +153,7 @@ fn mountain_fold() -> Lesson {
     Lesson {
         title: "2. The mountain fold",
         about: "The mountain fold goes away from you, behind the paper. Diagrams draw it dash-dot-dot.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: true,
         steps: vec![
@@ -154,6 +174,7 @@ fn precreases() -> Lesson {
     Lesson {
         title: "3. Fold and unfold",
         about: "Precreases: fold, unfold, and the crease stays to guide the folds after it.",
+        shape: Shape::Square,
         diamond: false,
         colored_up: true,
         steps: vec![
@@ -179,6 +200,7 @@ fn kite_base() -> Lesson {
     Lesson {
         title: "4. The kite base",
         about: "Bring an edge onto a crease: the fold bisects the corner. The base of many birds and fish.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: true,
         steps: vec![
@@ -203,6 +225,7 @@ fn blintz() -> Lesson {
     Lesson {
         title: "5. The blintz",
         about: "Four corners to the center, named after the folded pancake. A base of boxes and fortune tellers.",
+        shape: Shape::Square,
         diamond: false,
         colored_up: true,
         steps: vec![
@@ -230,6 +253,7 @@ fn pleats() -> Lesson {
     Lesson {
         title: "6. Pleats",
         about: "A pleat is a valley and a mountain side by side; pleats stack in levels, the ground of box pleating.",
+        shape: Shape::Square,
         diamond: false,
         colored_up: true,
         steps: vec![
@@ -267,6 +291,7 @@ fn paper_cup() -> Lesson {
     Lesson {
         title: "7. The paper cup",
         about: "A traditional model, started white side up so the color ends outside: folds of all the layers, then of one flap only.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: false,
         steps: vec![
@@ -299,6 +324,7 @@ fn dog_face() -> Lesson {
     Lesson {
         title: "8. The dog face",
         about: "The first model of many folders, white side up at the start: a triangle, two ears and a nose.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: false,
         steps: vec![
@@ -327,6 +353,7 @@ fn waterbomb_base() -> Lesson {
     Lesson {
         title: "9. The waterbomb base",
         about: "The inside reverse fold: a corner pushed in between its own layers, the crease along its spine turns inside out.",
+        shape: Shape::Square,
         diamond: false,
         colored_up: true,
         steps: [
@@ -392,6 +419,7 @@ fn preliminary_base() -> Lesson {
     Lesson {
         title: "10. The preliminary base",
         about: "Also called the square base, the start of the crane, the lily and the frog. The waterbomb base turned inside out.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: false,
         steps: preliminary_steps(),
@@ -488,6 +516,7 @@ fn bird_base() -> Lesson {
     Lesson {
         title: "11. The bird base",
         about: "Kite creases and petal folds on both sides of the preliminary base: the base of the crane, the flapping bird and many more. Started colored side up, the preliminary base is white outside; the petal folds turn its colored inside out.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: true,
         steps,
@@ -621,10 +650,67 @@ fn crane() -> Lesson {
     Lesson {
         title: "12. The crane",
         about: "The orizuru, the traditional crane: the bird base, narrowed legs reversed into a neck and a tail, a head, the wings down. Colored side up at the start, so the crane ends colored.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: true,
         steps,
         done: "A crane. Pull the wings apart gently and the body puffs up. Fold a thousand and make a wish.",
+    }
+}
+
+/// √3, for the constants of the hexagon.
+const SQRT_3: f64 = 1.732_050_807_568_877_2;
+
+/// The hinges of the wings of the Webb mirror, `x = ±WING`: the mirror is 18 hexagonal segments,
+/// the rings around a missing center one, in five columns; the outer column of three on each side
+/// is a wing. Columns of segments of circumradius `r` are `1.5 r` apart, the outer ones end at the
+/// corners of the sheet, `4 r`: between the second and the outer column is `2.25 r`.
+const WING: f64 = HEXAGON * 2.25 / 4.0;
+/// Where the hinges meet the slanted edges of the sheet.
+const WING_END: f64 = SQRT_3 * (HEXAGON - WING);
+
+/// The wings opened flat again, one at a time.
+const DEPLOY_PORT: Collapse = Collapse {
+    fold: &[],
+    flat: &[(p(-WING, -WING_END), p(-WING, WING_END))],
+    mirror: false,
+};
+const DEPLOY_STARBOARD: Collapse = Collapse {
+    fold: &[],
+    flat: &[(p(WING, -WING_END), p(WING, WING_END))],
+    mirror: false,
+};
+
+/// The primary mirror of the James Webb Space Telescope, 6.5 m across, folded to fit the rocket:
+/// a hexagonal sheet, golden side up as the gold of the mirror.
+fn webb_mirror() -> Lesson {
+    let hinge = |x: f64| Line::Through(p(x, -WING_END), p(x, WING_END));
+    let steps = vec![
+        step(
+            Fold::mountain(hinge(-WING), p(-HEXAGON, 0.0)),
+            "The sheet is the mirror: 18 hexagonal segments, the outer column of three on each side a wing. Fold the left wing back along its hinge.",
+        ),
+        step(
+            Fold::mountain(hinge(WING), p(HEXAGON, 0.0)),
+            "Fold the right wing back too: folded, the mirror fits inside the 5.4 m fairing of the Ariane 5 rocket.",
+        ),
+        step(
+            Fold::collapse(DEPLOY_PORT, p(0.0, 0.0)),
+            "In space, after the launch on 25 December 2021, the wings opened one at a time: unfold the left wing.",
+        ),
+        step(
+            Fold::collapse(DEPLOY_STARBOARD, p(0.0, 0.0)),
+            "And the right wing: the mirror is whole again.",
+        ),
+    ];
+    Lesson {
+        title: "14. The Webb mirror",
+        about: "Not a traditional fold but an engineered one: the primary mirror of the James Webb Space Telescope was too wide for any rocket, so its two side wings folded back, like the leaves of a drop-leaf table.",
+        shape: Shape::Hexagon,
+        diamond: false,
+        colored_up: true,
+        steps,
+        done: "The mirror deployed, as on 8 January 2022. Its 18 segments were then aligned to act as one 6.5 m mirror.",
     }
 }
 
@@ -701,6 +787,7 @@ fn sink() -> Lesson {
     Lesson {
         title: "13. The sink fold",
         about: "The open sink: the top point of the preliminary base pushed inside itself, the creases around it turned the other way. The start of the frog base and many more.",
+        shape: Shape::Square,
         diamond: true,
         colored_up: false,
         steps,
@@ -747,8 +834,9 @@ mod tests {
             assert!(result.is_ok(), "{}: {:?}", lesson.title, result.err());
             let (plans, last) = result.unwrap();
             let total: f64 = last.faces.iter().map(|f| f.area()).sum();
+            let sheet = lesson.start().faces[0].area();
             assert!(
-                (total - 4.0).abs() < 1e-6,
+                (total - sheet).abs() < 1e-6,
                 "{}: the paper area is {total}",
                 lesson.title
             );
