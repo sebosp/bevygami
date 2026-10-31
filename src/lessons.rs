@@ -93,6 +93,7 @@ pub fn all() -> Vec<Lesson> {
         preliminary_base(),
         bird_base(),
         crane(),
+        sink(),
     ]
 }
 
@@ -610,6 +611,84 @@ fn crane() -> Lesson {
         colored_up: false,
         steps,
         done: "A crane. Pull the wings apart gently and the body puffs up. Fold a thousand and make a wish.",
+    }
+}
+
+/// Where the open sink of the preliminary base folds, from its top: on the sheet, a square
+/// around the center with its corners on the book folds this far out.
+const SINK: f64 = 0.5;
+
+/// The open sink of the top of the preliminary base: the square of the sink line, mountain
+/// from the colored side (outside, the paper turns in over it), and every folded crease inside it
+/// turned the other way, the point goes in upside down. The creases inside are read from the
+/// folded base: the kind a crease has is how its two faces lie; the diagonals in the middle of the
+/// front and back of the base lie flat, they stay so.
+static SINK_CREASES: std::sync::LazyLock<Vec<(DVec2, DVec2, FoldKind)>> = std::sync::LazyLock::new(|| {
+    let lesson = preliminary_base();
+    let (_, paper) = crate::fold::plan_all(lesson.start(), &lesson.folds()).expect("the preliminary base folds");
+    // The sheet is folded white side up: mirrored, see `Lesson::start_pose`.
+    let sheet = |v: DVec2| DVec2::new(-v.x, v.y);
+    let kind_now = |a: DVec2, b: DVec2| {
+        let (a, b) = (sheet(a), sheet(b));
+        let mid = (a + b) / 2.0;
+        let n = DVec2::new(a.y - b.y, b.x - a.x).normalize() * 1e-4;
+        let (f, g) = (paper.face_at(mid + n), paper.face_at(mid - n));
+        let (f, g) = (&paper.faces[f.expect("a face")], &paper.faces[g.expect("a face")]);
+        if f.pose.close_to(&g.pose) {
+            None
+        } else if (f.layer < g.layer) == !f.pose.flipped() {
+            // Across a valley the front sides face each other.
+            Some(FoldKind::Valley)
+        } else {
+            Some(FoldKind::Mountain)
+        }
+    };
+    let corners = [p(SINK, 0.0), p(0.0, SINK), p(-SINK, 0.0), p(0.0, -SINK)];
+    let mut creases = Vec::new();
+    for k in 0..4 {
+        creases.push((corners[k], corners[(k + 1) % 4], FoldKind::Mountain));
+        // The book fold and the diagonal inside the square, the other way.
+        let diagonal = (corners[k] + corners[(k + 1) % 4]) / 2.0;
+        for end in [corners[k], diagonal] {
+            if let Some(kind) = kind_now(CENTER, end) {
+                creases.push((CENTER, end, kind.opposite()));
+            }
+        }
+    }
+    creases
+});
+
+fn sink() -> Lesson {
+    let mut steps = preliminary_steps();
+    // The top of the base is the center of the sheet, the sink line this deep below it.
+    let depth = SINK / SQRT_2;
+    let line = Line::Folded(DVec2::new(-1.0, -depth), DVec2::new(1.0, -depth));
+    steps.push(step(
+        Fold::valley(line, Grip::Top(DVec2::new(0.0, -0.1))).and_unfold(),
+        "Fold the top corner down through all the layers, crease it well, and unfold: the sink line.",
+    ));
+    steps.push(step(
+        Fold::mountain(line, Grip::Top(DVec2::new(0.0, -0.1))).and_unfold(),
+        "Fold it behind along the same line and unfold: the crease goes both ways.",
+    ));
+    steps.push(step(
+        Fold::collapse(
+            Collapse {
+                fold: &SINK_CREASES,
+                flat: &[],
+                mirror: false,
+            },
+            p(-0.9, -0.9),
+        ),
+        "Open sink: open the layers, push the top point down inside along the creases, the square around it turns inside out, and close the layers again.",
+    ));
+    Lesson {
+        title: "13. The sink fold",
+        about: "The open sink: the top point of the preliminary base pushed inside itself, the creases around it turned the other way. The start of the frog base and many more.",
+        diamond: true,
+        colored_up: false,
+        steps,
+        done: "An open sink: the top is flat and blunt, the point is inside. A closed sink, without opening the layers, comes later.",
     }
 }
 

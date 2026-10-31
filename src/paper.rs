@@ -362,13 +362,11 @@ fn place(
         (Some(plan), Some(sheet)) if session.t != 0.0 => bend(plan, sheet, session.t),
         _ => None,
     };
-    // A collapse goes where the faces were brought together, its layers on the way.
+    // A collapse goes where the faces were brought together, each to its new layer on the way.
     if let (Some((_, Some(places))), Some(plan)) = (&bent, session.plan()) {
         let t = session.t;
+        // The faces that stay too: the layers of the collapse are all ordered again.
         for (i, place) in places.iter().enumerate() {
-            if !plan.moving[i] {
-                continue;
-            }
             let z = (plan.before.faces[i].layer as f32 * (1.0 - t) + plan.landed.faces[i].layer as f32 * t) * LAYER_GAP;
             let affine = Affine3A::from_mat3_translation(place.m.as_mat3(), place.t.as_vec3() + Vec3::Z * z);
             if let Some(slot) = placement.faces.get_mut(i) {
@@ -832,6 +830,6 @@ mod tests {
                 eprintln!("{} step {}: bends by {worst:.3} at most", lesson.title, k + 1);
             }
         }
-        assert_eq!(collapses, 8);
+        assert_eq!(collapses, 9);
     }
 }

@@ -21,6 +21,7 @@ browser.
 | 10. The preliminary base | inside reverse folds from a triangle, the start of the crane |
 | 11. The bird base    | precreases, turning over, the petal folds (collapses)            |
 | 12. The crane        | the orizuru: legs narrowed, neck and tail reversed, head, wings  |
+| 13. The sink fold    | the open sink: the top of the preliminary base pushed inside     |
 
 The traditional models and the preliminary base start white side up, so the color ends outside.
 
@@ -94,7 +95,9 @@ flexes near the edge, as in the hands. The faces of those steps are meshed finel
 points on both sides of every edge, so nothing tears; a test checks it. The collapses bend too:
 each face first goes from where it was to where it lands on its own, then the faces that move are
 brought together, each refitted as a rigid piece onto the middle of where it and its neighbors put
-its edges (200 rounds a frame), and what is left apart bends. The petal folds go from 0.9 apart
+its edges (200 rounds a frame), and what is left apart bends. A **sink** is a collapse too: the sink line is a closed
+square around the point, and every crease inside it that is folded turns the other way (read from
+the folded paper, so the diagonals lying flat in the middle of the front and back stay flat). The petal folds go from 0.9 apart
 to 0.05; the leg narrowings fold over in one piece and do not need it.
 
 A **collapse** folds several creases at once, as the CP editors fold a crease pattern (the petal
