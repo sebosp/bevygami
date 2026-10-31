@@ -636,8 +636,18 @@ pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError
             .map(|(f, _)| f.layer)
     };
     let (mlo, mhi) = (moving_layers().min().unwrap_or(0), moving_layers().max().unwrap_or(0));
-    // The front half of a flap, for the reverse folds.
-    let front = |layer: i32| 2 * layer > mlo + mhi;
+    // The front half of a flap, for the reverse folds: the upper half of its own layers, other
+    // layers of the model can lie between them.
+    let mut flap_layers: Vec<i32> = moving_layers().collect();
+    flap_layers.sort_unstable();
+    flap_layers.dedup();
+    let k = flap_layers.len();
+    let middle = if k.is_multiple_of(2) && k > 0 {
+        flap_layers[k / 2 - 1] + flap_layers[k / 2]
+    } else {
+        mlo + mhi
+    };
+    let front = |layer: i32| 2 * layer > middle;
     let turns: Vec<FoldKind> = before
         .faces
         .iter()

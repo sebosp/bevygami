@@ -24,6 +24,8 @@ pub enum Part {
     /// The front half of the flap that reverses.
     FrontFlap,
     BackFlap,
+    /// Joined to the rest only along the line the layers open around, it does not move.
+    Still,
 }
 
 /// A reverse fold that moves rigidly, on the folded plane.
@@ -64,6 +66,7 @@ impl Pose3 {
             Part::BackStay => self.back_stay,
             Part::FrontFlap => self.front_flap,
             Part::BackFlap => self.back_flap,
+            Part::Still => DMat3::IDENTITY,
         }
     }
 }
@@ -105,45 +108,32 @@ fn common_line(segments: &[(DVec2, DVec2)], through: Option<DVec2>) -> Option<(D
 
 impl Reverse {
     /// The rigid motion of the reverse fold of the faces that move, the fold line `(a, d)` on the
-    /// folded plane, `front` the faces on the front half of the flap and of what stays. `None`
-    /// when the paper around does not open like a vertex of four creases, the fold then turns the
-    /// halves of the flap on their own.
+    /// folded plane, `front` the faces on the front half of the flap. The layers that stay open
+    /// around a line through the vertex, the ones that have to: those joined to the halves of the
+    /// flap, and on through the paper wherever they are joined away from that line. `None` when
+    /// they cannot, the fold then turns the halves of the flap on their own.
     pub fn new(
         paper: &Paper,
         moving: &[bool],
         front: &dyn Fn(usize) -> bool,
         (a, d): (DVec2, DVec2),
     ) -> Option<Reverse> {
-        let parts: Vec<Part> = (0..paper.faces.len())
-            .map(|i| match (moving[i], front(i)) {
-                (true, true) => Part::FrontFlap,
-                (true, false) => Part::BackFlap,
-                (false, true) => Part::FrontStay,
-                (false, false) => Part::BackStay,
-            })
-            .collect();
-        let mut spine = Vec::new();
-        let mut stay = Vec::new();
+        let n = paper.faces.len();
+        // Every joint of two faces, on the folded plane.
+        let mut joints: Vec<(usize, usize, DVec2, DVec2)> = Vec::new();
         for (i, f) in paper.faces.iter().enumerate() {
             for (j, g) in paper.faces.iter().enumerate().skip(i + 1) {
-                let pair = (parts[i], parts[j]);
                 for (p, q) in shared_edges(f, g) {
-                    let (p, q) = (f.pose.apply(p), f.pose.apply(q));
-                    use Part::*;
-                    match pair {
-                        (FrontFlap, BackFlap) | (BackFlap, FrontFlap) => spine.push((p, q)),
-                        (FrontStay, BackStay) | (BackStay, FrontStay) => stay.push((p, q)),
-                        (FrontStay, BackFlap)
-                        | (BackFlap, FrontStay)
-                        | (BackStay, FrontFlap)
-                        | (FrontFlap, BackStay) => {
-                            return None;
-                        }
-                        _ => {}
-                    }
+                    joints.push((i, j, f.pose.apply(p), f.pose.apply(q)));
                 }
             }
         }
+        let flap_part = |i: usize| if front(i) { Part::FrontFlap } else { Part::BackFlap };
+        let spine: Vec<(DVec2, DVec2)> = joints
+            .iter()
+            .filter(|(i, j, _, _)| moving[*i] && moving[*j] && front(*i) != front(*j))
+            .map(|(_, _, p, q)| (*p, *q))
+            .collect();
         // The vertex: the spine of the flap across the fold line.
         let (sp, sd) = common_line(&spine, None)?;
         let den = cross(sd, d);
@@ -156,24 +146,108 @@ impl Reverse {
             if (mid - vertex).dot(dir) >= 0.0 { dir } else { -dir }
         };
         let m0 = away(&spine, sd);
-        let (_, axis) = common_line(&stay, Some(vertex))?;
-        let s = away(&stay, axis);
-        let centroid = |part: Part| {
-            let faces: Vec<DVec2> = (0..parts.len())
-                .filter(|i| parts[*i] == part)
-                .map(|i| paper.faces[i].centroid_image())
-                .collect();
-            (!faces.is_empty()).then(|| faces.iter().sum::<DVec2>() / faces.len() as f64)
-        };
-        let toward = cross(s, centroid(Part::FrontStay)? - vertex);
-        if toward.abs() < EPS {
-            return None;
+        // The lines the layers that stay may open around: on from the spine of the flap, or along
+        // a joint of them through the vertex.
+        let mut axes = vec![-m0];
+        for (i, j, p, q) in &joints {
+            if moving[*i] || moving[*j] {
+                continue;
+            }
+            if let Some((_, dir)) = common_line(&[(*p, *q)], Some(vertex)) {
+                let dir = away(&[(*p, *q)], dir);
+                if axes.iter().all(|x| x.distance(dir) > EPS) {
+                    axes.push(dir);
+                }
+            }
         }
-        let side = perp(s) * toward.signum();
+        let centroid = |faces: &[usize]| {
+            (!faces.is_empty())
+                .then(|| faces.iter().map(|i| paper.faces[*i].centroid_image()).sum::<DVec2>() / faces.len() as f64)
+        };
+        let flap_faces: Vec<usize> = (0..n).filter(|i| moving[*i] && front(*i)).collect();
         // The spine swings through the flap, past the fold line on its side.
-        let flap = cross(m0, centroid(Part::FrontFlap)? - vertex).signum();
+        let flap = cross(m0, centroid(&flap_faces)? - vertex).signum();
         let l = if cross(m0, d) * flap > 0.0 { d } else { -d };
         let sweep = 2.0 * m0.angle_to(l);
+        axes.into_iter().find_map(|s| {
+            let parts = Self::open_around(n, &joints, moving, &flap_part, vertex, s)?;
+            // The layers lift on the side of the ones joined to the front of the flap.
+            let seeds: Vec<usize> = joints
+                .iter()
+                .filter_map(|(i, j, _, _)| match (parts[*i], parts[*j]) {
+                    (Part::FrontFlap, Part::FrontStay) => Some(*j),
+                    (Part::FrontStay, Part::FrontFlap) => Some(*i),
+                    _ => None,
+                })
+                .collect();
+            let toward = cross(s, centroid(&seeds)? - vertex);
+            if toward.abs() < EPS {
+                return None;
+            }
+            Self::swing(parts, vertex, s, perp(s) * toward.signum(), l, m0, sweep)
+        })
+    }
+
+    /// The faces that open with each half of the flap, around the line `s` from the vertex: the
+    /// ones joined to them away from that line; the others do not move.
+    fn open_around(
+        n: usize,
+        joints: &[(usize, usize, DVec2, DVec2)],
+        moving: &[bool],
+        flap_part: &dyn Fn(usize) -> Part,
+        vertex: DVec2,
+        s: DVec2,
+    ) -> Option<Vec<Part>> {
+        let mut parts: Vec<Option<Part>> = (0..n).map(|i| moving[i].then(|| flap_part(i))).collect();
+        let stay_of = |part: Part| match part {
+            Part::FrontFlap | Part::FrontStay => Part::FrontStay,
+            _ => Part::BackStay,
+        };
+        let on_axis = |p: DVec2, q: DVec2| cross(s, p - vertex).abs() < EPS && cross(s, q - vertex).abs() < EPS;
+        let mut todo: Vec<usize> = (0..n).filter(|i| moving[*i]).collect();
+        while let Some(i) = todo.pop() {
+            let here = stay_of(parts[i]?);
+            for (f, g, p, q) in joints {
+                let other = if *f == i {
+                    *g
+                } else if *g == i {
+                    *f
+                } else {
+                    continue;
+                };
+                if moving[other] {
+                    // A half of the flap joined to the other half of what stays.
+                    if stay_of(parts[other]?) != here && !moving[i] {
+                        return None;
+                    }
+                    continue;
+                }
+                if !moving[i] && on_axis(*p, *q) {
+                    continue;
+                }
+                match parts[other] {
+                    None => {
+                        parts[other] = Some(here);
+                        todo.push(other);
+                    }
+                    Some(there) if there != here => return None,
+                    Some(_) => {}
+                }
+            }
+        }
+        Some(parts.into_iter().map(|p| p.unwrap_or(Part::Still)).collect())
+    }
+
+    /// The motion around the vertex, `None` when the layers would have to open too far.
+    fn swing(
+        parts: Vec<Part>,
+        vertex: DVec2,
+        s: DVec2,
+        side: DVec2,
+        l: DVec2,
+        m0: DVec2,
+        sweep: f64,
+    ) -> Option<Reverse> {
         let mut reverse = Reverse {
             parts,
             vertex,

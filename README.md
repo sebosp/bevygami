@@ -80,9 +80,12 @@ two halves of the flap are joined along the spine, turned each around the line t
 The paper moves like a vertex of four creases (the spine of the flap, the fold line on its two
 halves, the spine of what stays): the front layers lift around their spine, flat when the spine of
 the flap starts on it, the spine of the flap swings between the layers from where it was to where
-it lands, and the layers close. A test checks every edge stays joined along the motion. The
-reverse folds of the crane (neck, tail, head) have more layers than these four parts, they still
-turn the halves of the flap on their own.
+it lands, and the layers close. The halves of the flap are the upper and lower half of its own
+layers (the crane's legs are eight layers in a zigzag, joined front to back along one spine), and
+the layers that open are found through the paper: those joined to the flap, and on wherever they
+are joined away from the line they open around; the rest does not move. A test checks every edge
+stays joined along the motion. The crane's tail and head still turn the halves of the flap on their
+own: with the neck reversed, stiff paper could only open the body by unfolding the neck again.
 
 A **collapse** folds several creases at once, as the CP editors fold a crease pattern (the petal
 folds of the bird base, the leg narrowings of the crane): the step lists the creases that fold
