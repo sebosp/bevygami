@@ -17,6 +17,8 @@ bevy = { version = "0.20.0", default-features = false, features = [
     # A drag on the paper folds it, see `crate::input`.
     "mesh_picking",
     "default_font",
+    # The cursor that says a drag turns the model, see `crate::cursor`.
+    "custom_cursor",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -4,9 +4,11 @@ use bevy::prelude::*;
 
 pub mod cp;
 pub mod cpview;
+pub mod cursor;
 pub mod fold;
 pub mod layers;
 pub mod lessons;
+pub mod motion;
 pub mod paper;
 pub mod session;
 pub mod settings;
@@ -31,6 +33,7 @@ impl Plugin for BevygamiPlugin {
                 session::SessionPlugin,
                 paper::PaperPlugin,
                 view::ViewPlugin,
+                cursor::CursorPlugin,
                 cpview::CpViewPlugin,
                 ui::UiPlugin,
                 zoom::ZoomPlugin,

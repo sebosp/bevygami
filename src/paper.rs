@@ -13,7 +13,8 @@ use bevy::math::{Affine3A, DMat2, DVec2};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::fold::{Face, FoldKind, Paper, Style, shared_edges};
+use crate::fold::{Face, FoldKind, Paper, Planned, Style, shared_edges};
+use crate::motion::Reverse;
 use crate::session::{Session, SessionSystems};
 use crate::settings::Settings;
 use crate::theme::{self, ThemeMode, crease_on_paper, hex};
@@ -238,6 +239,11 @@ fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Que
     for (i, face) in paper.faces.iter().enumerate() {
         let mut affine = rest(face);
         if let Some(plan) = session.plan()
+            && let Some(reverse) = &plan.reverse
+            && session.t != 0.0
+        {
+            affine = reverse_motion(plan, reverse, i, session.t);
+        } else if let Some(plan) = session.plan()
             && plan.moving[i]
             && plan.fold.style == Style::Collapse
             && session.t != 0.0
@@ -275,6 +281,37 @@ fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Que
             *transform = Transform::from_matrix(Mat4::from(*affine));
         }
     }
+}
+
+/// A face of a reverse fold on its way, see [`Reverse`]: turned around the vertex, in the middle
+/// plane between the halves of the flap, and lifted to its new layer at the end.
+fn reverse_motion(plan: &Planned, reverse: &Reverse, i: usize, t: f32) -> Affine3A {
+    let face = &plan.before.faces[i];
+    let layers = || {
+        plan.before
+            .faces
+            .iter()
+            .zip(&plan.moving)
+            .filter(|(_, m)| **m)
+            .map(|(f, _)| f.layer)
+    };
+    let (lo, hi) = (layers().min().unwrap_or(0), layers().max().unwrap_or(0));
+    let middle = (lo + hi) as f32 / 2.0 * LAYER_GAP;
+    let pivot = Vec3::new(reverse.vertex.x as f32, reverse.vertex.y as f32, middle);
+    let turn = reverse.at(t as f64).of(reverse.parts[i]).as_mat3();
+    let z_before = face.layer as f32 * LAYER_GAP;
+    let z_after = plan.landed.faces[i].layer as f32 * LAYER_GAP;
+    // The flap ends turned over around the middle plane, the layers that stay where they were.
+    let z_end = if plan.moving[i] {
+        2.0 * middle - z_before
+    } else {
+        z_before
+    };
+    Affine3A::from_translation(Vec3::Z * t * (z_after - z_end))
+        * Affine3A::from_translation(pivot)
+        * Affine3A::from_mat3(turn)
+        * Affine3A::from_translation(-pivot)
+        * rest(face)
 }
 
 /// A face of a collapse on its way, `t` from 0 to 1: the isometry from where it was to where it

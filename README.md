@@ -49,6 +49,8 @@ were checked with a palette validator (lightness, chroma, color-blind separation
   **Fold**, → Space or Enter fold it for you; **‹ Back**, ← or Backspace unfold the last step.
 - Drag around the paper (or with the right button) to turn it, the wheel or a pinch to zoom, R or
   **Reset view** to come back.
+- The cursor says what a press does: an open hand over the flap (or a little around it), a closed
+  hand while it folds, two arrows around a circle where a drag turns the model.
 - Ctrl and the wheel, Ctrl+= Ctrl+- Ctrl+0, a pinch, or the buttons of the settings zoom the
   text and the panels, for a display that is hard to read.
 - **Lessons** (a feathers menu, with the step reached and the lessons done), **Settings** (dark
@@ -71,6 +73,16 @@ moving point can also be the top layer at a point of the folded model, and the l
 of the folded model, for the steps on many layers. Inside and outside reverse folds turn the two
 halves of a flap opposite ways and reverse the part of its spine that moves; a turn over mirrors
 the whole model and its layers.
+
+A reverse fold is taught as by hand: the flap folded along the line through its layers and
+unfolded, the crease marks it, then the reverse fold. Its motion is rigid (`src/motion.rs`): the
+two halves of the flap are joined along the spine, turned each around the line they would tear.
+The paper moves like a vertex of four creases (the spine of the flap, the fold line on its two
+halves, the spine of what stays): the front layers lift around their spine, flat when the spine of
+the flap starts on it, the spine of the flap swings between the layers from where it was to where
+it lands, and the layers close. A test checks every edge stays joined along the motion. The
+reverse folds of the crane (neck, tail, head) have more layers than these four parts, they still
+turn the halves of the flap on their own.
 
 A **collapse** folds several creases at once, as the CP editors fold a crease pattern (the petal
 folds of the bird base, the leg narrowings of the crane): the step lists the creases that fold

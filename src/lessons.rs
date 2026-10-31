@@ -70,6 +70,15 @@ fn step(fold: Fold, text: &'static str) -> Step {
     Step { fold, text }
 }
 
+/// An inside reverse fold as it is done by hand: first the flap folded along the line through all
+/// its layers and unfolded, the crease marks it; then the reverse fold along that crease.
+fn marked_reverse(line: Line, moving: impl Into<Grip> + Copy, mark: &'static str, text: &'static str) -> [Step; 2] {
+    [
+        step(Fold::valley(line, moving).flap().and_unfold(), mark),
+        step(Fold::inside_reverse(line, moving), text),
+    ]
+}
+
 pub fn all() -> Vec<Lesson> {
     vec![
         diagonal_fold(),
@@ -306,20 +315,31 @@ fn waterbomb_base() -> Lesson {
         about: "The inside reverse fold: a corner pushed in between its own layers, the crease along its spine turns inside out.",
         diamond: false,
         colored_up: true,
-        steps: vec![
-            step(
+        steps: [
+            vec![step(
                 Fold::bring(TL, BL),
                 "Valley fold the top edge down onto the bottom edge.",
-            ),
-            step(
-                Fold::inside_reverse(Line::Through(CENTER, BL), p(-1.0, 0.0)),
-                "Inside reverse fold the left corner: open the layers a little and push the corner in between them, along the diagonal.",
-            ),
-            step(
-                Fold::inside_reverse(Line::Through(CENTER, BR), p(1.0, 0.0)),
-                "Inside reverse fold the right corner the same way.",
-            ),
-        ],
+            )],
+            marked_reverse(
+                Line::Through(CENTER, BL),
+                p(-1.0, 0.0),
+                "Fold the left corner down along the diagonal, through both layers, and unfold: the crease marks the reverse fold.",
+                "Inside reverse fold the left corner: open the layers flat, push the corner in between them along the creases, and close them.",
+            )
+            .into_iter()
+            .collect(),
+            marked_reverse(
+                Line::Through(CENTER, BR),
+                p(1.0, 0.0),
+                "Mark the right corner the same way: fold it down and unfold.",
+                "Inside reverse fold the right corner: open, push it in, close.",
+            )
+            .into_iter()
+            .collect(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         done: "The waterbomb base: a triangle with two flaps on each side. The waterbomb and the jumping frog start here.",
     }
 }
@@ -327,20 +347,31 @@ fn waterbomb_base() -> Lesson {
 /// The steps of the preliminary (square) base, white side up: from a triangle, both corners
 /// reversed inside along the book fold lines.
 fn preliminary_steps() -> Vec<Step> {
-    vec![
-        step(
+    [
+        vec![step(
             Fold::bring(TR, BL),
             "Valley fold the top corner down to the bottom corner: a triangle.",
-        ),
-        step(
-            Fold::inside_reverse(Line::Through(CENTER, p(-1.0, 0.0)), TL),
-            "Inside reverse fold the left corner down to the bottom, between the layers.",
-        ),
-        step(
-            Fold::inside_reverse(Line::Through(CENTER, p(0.0, -1.0)), BR),
-            "Inside reverse fold the right corner the same way: a square standing on a corner.",
-        ),
+        )],
+        marked_reverse(
+            Line::Through(CENTER, p(-1.0, 0.0)),
+            TL,
+            "Fold the left corner down to the bottom corner, through both layers, and unfold: the crease marks the reverse fold.",
+            "Inside reverse fold the left corner: open the layers until the paper lies flat, push the corner in along the creases, and close it down to the bottom.",
+        )
+        .into_iter()
+        .collect(),
+        marked_reverse(
+            Line::Through(CENTER, p(0.0, -1.0)),
+            BR,
+            "Mark the right corner the same way: down to the bottom and unfold.",
+            "Inside reverse fold the right corner: open, push it in, and close: a square standing on a corner.",
+        )
+        .into_iter()
+        .collect(),
     ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 fn preliminary_base() -> Lesson {
@@ -538,12 +569,16 @@ fn crane() -> Lesson {
         let a = (195.0f64).to_radians();
         Line::Folded(hinge, hinge + DVec2::new(x * a.cos(), a.sin()))
     };
-    steps.push(step(
-        Fold::inside_reverse(up(1.0), TL),
-        "Inside reverse fold the left leg up between the wings: the neck.",
+    steps.extend(marked_reverse(
+        up(1.0),
+        TL,
+        "Fold the left leg up through its layers, and unfold: the crease marks the neck.",
+        "Inside reverse fold the left leg up between the wings, along the crease: the neck.",
     ));
-    steps.push(step(
-        Fold::inside_reverse(up(-1.0), BR),
+    steps.extend(marked_reverse(
+        up(-1.0),
+        BR,
+        "Mark the tail the same way: the right leg up, and unfold.",
         "Inside reverse fold the right leg up: the tail.",
     ));
     // The head: the tip of the neck reversed down. The neck goes up at 120° from the hinge, as long

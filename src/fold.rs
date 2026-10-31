@@ -425,6 +425,8 @@ pub struct Planned {
     /// The faces of `before` once folded, the precreases included, for the landing outline.
     pub landed: Paper,
     pub chords: Vec<Chord>,
+    /// How a reverse fold moves without tearing the spine of the flap, when it can.
+    pub reverse: Option<crate::motion::Reverse>,
 }
 
 pub fn cross(a: DVec2, b: DVec2) -> f64 {
@@ -727,7 +729,14 @@ pub fn plan(paper: &Paper, fold: Fold, step: usize) -> Result<Planned, FoldError
     } else {
         landed.clone()
     };
+    let reverse = match fold.style {
+        Style::InsideReverse | Style::OutsideReverse => {
+            crate::motion::Reverse::new(&before, &face_moving, &|i| front(before.faces[i].layer), (a, d))
+        }
+        _ => None,
+    };
     Ok(Planned {
+        reverse,
         fold,
         before,
         moving: face_moving,
@@ -815,6 +824,7 @@ fn turn_over(paper: &Paper, fold: Fold) -> Planned {
         after,
         landed,
         chords: Vec::new(),
+        reverse: None,
     }
 }
 
@@ -1287,6 +1297,7 @@ fn plan_collapse(paper: &Paper, fold: Fold, collapse: Collapse, step: usize) -> 
         after: landed.clone(),
         landed,
         chords,
+        reverse: None,
     })
 }
 

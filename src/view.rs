@@ -10,6 +10,7 @@ use bevy::picking::pointer::PointerId;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use crate::cursor::Hand;
 use crate::fold::{Pose, cross};
 use crate::session::{Animation, Command, Session, SessionSystems};
 use crate::ui::Panel;
@@ -43,6 +44,13 @@ impl Default for Orbit {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct ResetView;
 
+/// The pointer read, before the cursor is chosen.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ViewSystems;
+
+/// How far around a flap a press still takes it, in pixels.
+const REACH: f32 = 14.0;
+
 /// What the pointer holds.
 #[derive(Default)]
 enum Hold {
@@ -69,7 +77,14 @@ impl Plugin for ViewPlugin {
             .add_systems(Startup, spawn_camera)
             .add_systems(
                 Update,
-                (keys, pointer.before(SessionSystems), zoom, reset_view, move_camera).chain(),
+                (
+                    keys,
+                    pointer.before(SessionSystems).in_set(ViewSystems),
+                    zoom,
+                    reset_view,
+                    move_camera,
+                )
+                    .chain(),
             );
     }
 }
@@ -165,18 +180,22 @@ fn pointer(
     panel: Res<Panel>,
     mut orbit: ResMut<Orbit>,
     mut session: ResMut<Session>,
+    mut hand: ResMut<Hand>,
     mut hold: Local<Hold>,
 ) {
     let Some(pointer) = current_pointer(&window, &buttons, &motion, &touches) else {
         // Two fingers: the pinch zooms, see `zoom`.
         *hold = Hold::Nothing;
+        hand.set_if_neq(Hand::Free);
         return;
     };
     let (camera, camera_transform) = *camera;
+    // A press this far from a flap, on the paper, still takes it.
+    let reach = reach(camera, camera_transform, pointer.position);
+    let over_ui = hover
+        .get(&pointer.id)
+        .is_some_and(|hits| hits.keys().any(|e| nodes.contains(*e)));
     if pointer.pressed {
-        let over_ui = hover
-            .get(&pointer.id)
-            .is_some_and(|hits| hits.keys().any(|e| nodes.contains(*e)));
         *hold = if over_ui || *panel != Panel::None {
             Hold::Ui
         } else if buttons.just_pressed(MouseButton::Left) || matches!(pointer.id, PointerId::Touch(_)) {
@@ -184,6 +203,7 @@ fn pointer(
                 &session,
                 on_paper(camera, camera_transform, pointer.position),
                 pointer.position,
+                reach,
             )
             .unwrap_or(Hold::Orbit)
         } else {
@@ -232,22 +252,72 @@ fn pointer(
         }
         *hold = Hold::Nothing;
     }
+    let now = match *hold {
+        Hold::Flap { .. } => Hand::Folding,
+        Hold::Orbit => Hand::Turning,
+        Hold::Ui => Hand::Free,
+        Hold::Nothing if over_ui || *panel != Panel::None || matches!(pointer.id, PointerId::Touch(_)) => Hand::Free,
+        Hold::Nothing => {
+            let at = on_paper(camera, camera_transform, pointer.position);
+            if grab_flap(&session, at, pointer.position, reach).is_some() {
+                Hand::OverFlap
+            } else {
+                Hand::OverTurn
+            }
+        }
+    };
+    hand.set_if_neq(now);
 }
 
-/// The flap of the current fold under the pointer, at rest.
-fn grab_flap(session: &Session, at: Option<DVec2>, pressed: Vec2) -> Option<Hold> {
-    let at = at?;
+/// [`REACH`] pixels on the paper, around the pointer.
+fn reach(camera: &Camera, camera_transform: &GlobalTransform, position: Vec2) -> f64 {
+    let here = on_paper(camera, camera_transform, position);
+    let there = on_paper(camera, camera_transform, position + Vec2::new(REACH, 0.0));
+    here.zip(there).map_or(0.0, |(a, b)| a.distance(b))
+}
+
+/// The closest point of the polygon's boundary to `p`.
+fn closest_on(poly: &[DVec2], p: DVec2) -> DVec2 {
+    let n = poly.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let ab = b - a;
+            a + ab * ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+        })
+        .min_by(|x, y| x.distance(p).total_cmp(&y.distance(p)))
+        .unwrap_or(p)
+}
+
+/// The flap of the current fold under the pointer, at rest, or within `reach` of it.
+fn grab_flap(session: &Session, at: Option<DVec2>, pressed: Vec2, reach: f64) -> Option<Hold> {
+    let mut at = at?;
     if !session.at_rest() {
         return None;
     }
     let plan = session.plan()?;
-    let on_flap = plan.before.faces.iter().zip(&plan.moving).any(|(face, m)| {
+    let inside = |face: &crate::fold::Face, p: DVec2| {
         let image = face.image();
         let n = image.len();
-        *m && (0..n).all(|i| cross(image[(i + 1) % n] - image[i], at - image[i]) * orientation(face.pose) >= -1e-9)
-    });
-    if !on_flap {
-        return None;
+        (0..n).all(|i| cross(image[(i + 1) % n] - image[i], p - image[i]) * orientation(face.pose) >= -1e-9)
+    };
+    let flaps = || {
+        plan.before
+            .faces
+            .iter()
+            .zip(&plan.moving)
+            .filter(|(_, m)| **m)
+            .map(|(f, _)| f)
+    };
+    if !flaps().any(|face| inside(face, at)) {
+        // Next to the flap: the point of its edge, a hair inside.
+        let (face, near) = flaps()
+            .map(|face| (face, closest_on(&face.image(), at)))
+            .min_by(|x, y| x.1.distance(at).total_cmp(&y.1.distance(at)))?;
+        if near.distance(at) > reach {
+            return None;
+        }
+        at = near + (face.centroid_image() - near).normalize_or_zero() * 1e-4;
     }
     // Where the point taken lands: the face under it, from where it is to where it goes.
     let landing = |p: DVec2| {
