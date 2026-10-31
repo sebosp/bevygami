@@ -9,10 +9,12 @@ use std::f32::consts::{PI, TAU};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::color::Mix;
-use bevy::math::{Affine3A, DMat2, DVec2};
+use bevy::math::{Affine3A, DMat2, DVec2, DVec3};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use std::sync::Arc;
 
+use crate::bend::{Bent, Samples, Sheet};
 use crate::fold::{Face, FoldKind, Paper, Planned, Style, shared_edges};
 use crate::motion::Reverse;
 use crate::session::{Session, SessionSystems};
@@ -27,6 +29,9 @@ const LINE_LIFT: f32 = 0.0018;
 #[derive(Component)]
 pub struct FaceMesh {
     pub face: usize,
+    /// The meshes of the two sides and the points of the mesh, for the faces that may bend.
+    sides: Option<(Handle<Mesh>, Handle<Mesh>)>,
+    bent: bool,
 }
 
 /// The lines of the creases done.
@@ -54,6 +59,26 @@ struct PaperMaterials {
 pub struct Placement {
     pub faces: Vec<Affine3A>,
     generation: u32,
+    /// The faces meshed for bending, when the step bends the paper, see [`crate::bend`].
+    sheet: Option<Arc<Sheet>>,
+    /// Where the paper bends now.
+    bent: Option<Bent>,
+}
+
+impl Placement {
+    /// The point `p` of the face (paper coordinates) in the world.
+    pub fn point(&self, face: usize, p: DVec2) -> Option<Vec3> {
+        let affine = self.faces.get(face)?;
+        let mut at = to_world(affine, p);
+        if let (Some(sheet), Some(bent)) = (&self.sheet, &self.bent) {
+            at += bent.at(sheet, face, p).as_vec3();
+        }
+        Some(at)
+    }
+
+    fn bends(&self, face: usize) -> bool {
+        self.bent.as_ref().is_some_and(|b| !b.flat(face))
+    }
 }
 
 /// The creases on the edges of the shown faces: face, segment, kind on the front, step.
@@ -154,6 +179,46 @@ fn face_meshes(face: &Face) -> (Mesh, Mesh) {
     (mesh([0.0, 0.0, 1.0], fan), mesh([0.0, 0.0, -1.0], back_fan))
 }
 
+/// A face meshed finely, the meshes it bends with.
+fn sample_meshes(samples: &Samples) -> (Mesh, Mesh) {
+    let positions: Vec<[f32; 3]> = samples.points.iter().map(|p| [p.x as f32, p.y as f32, 0.0]).collect();
+    let uvs: Vec<[f32; 2]> = samples
+        .points
+        .iter()
+        .map(|p| [(p.x as f32 + 1.0) / 2.0, (1.0 - p.y as f32) / 2.0])
+        .collect();
+    let front: Vec<u32> = samples.triangles.iter().flat_map(|[a, b, c]| [*a, *b, *c]).collect();
+    let back: Vec<u32> = samples.triangles.iter().flat_map(|[a, b, c]| [*a, *c, *b]).collect();
+    let n = positions.len();
+    let mesh = |normal: [f32; 3], indices: Vec<u32>| {
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![normal; n])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.clone())
+            .with_inserted_indices(Indices::U32(indices))
+    };
+    (mesh([0.0, 0.0, 1.0], front), mesh([0.0, 0.0, -1.0], back))
+}
+
+/// The points of the mesh of a face moved by the bend (local coordinates), and their normals.
+fn bend_mesh(samples: &Samples, offset: impl Fn(DVec2) -> Vec3) -> (Vec<[f32; 3]>, Vec<Vec3>) {
+    let positions: Vec<Vec3> = samples
+        .points
+        .iter()
+        .map(|p| Vec3::new(p.x as f32, p.y as f32, 0.0) + offset(*p))
+        .collect();
+    let mut normals = vec![Vec3::ZERO; positions.len()];
+    for [a, b, c] in &samples.triangles {
+        let (a, b, c) = (*a as usize, *b as usize, *c as usize);
+        let n = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
+        for v in [a, b, c] {
+            normals[v] += n;
+        }
+    }
+    let normals = normals.into_iter().map(|n| n.normalize_or(Vec3::Z)).collect();
+    (positions.into_iter().map(|p| p.to_array()).collect(), normals)
+}
+
 /// The faces of the shown paper spawned again when the step changes.
 fn respawn(
     session: Res<Session>,
@@ -173,8 +238,17 @@ fn respawn(
     }
     let paper = session.shown();
     let moving = session.plan().map(|p| p.moving.clone()).unwrap_or_default();
+    let bends = session
+        .plan()
+        .is_some_and(|p| p.reverse.as_ref().is_some_and(|r| r.bending));
+    placement.sheet = bends.then(|| Arc::new(Sheet::new(paper)));
+    placement.bent = None;
     for (i, face) in paper.faces.iter().enumerate() {
-        let (front, back) = face_meshes(face);
+        let (front, back) = match &placement.sheet {
+            Some(sheet) => sample_meshes(&sheet.faces[i]),
+            None => face_meshes(face),
+        };
+        let (front, back) = (meshes.add(front), meshes.add(back));
         let m = moving.get(i).copied().unwrap_or(false);
         let (front_material, back_material) = if m {
             (materials.front_moving.clone(), materials.back_moving.clone())
@@ -182,12 +256,16 @@ fn respawn(
             (materials.front.clone(), materials.back.clone())
         };
         commands.spawn((
-            FaceMesh { face: i },
+            FaceMesh {
+                face: i,
+                sides: bends.then(|| (front.clone(), back.clone())),
+                bent: false,
+            },
             Transform::default(),
             Visibility::default(),
             children![
-                (Mesh3d(meshes.add(front)), MeshMaterial3d(front_material)),
-                (Mesh3d(meshes.add(back)), MeshMaterial3d(back_material)),
+                (Mesh3d(front), MeshMaterial3d(front_material)),
+                (Mesh3d(back), MeshMaterial3d(back_material)),
             ],
         ));
     }
@@ -233,7 +311,12 @@ fn rest(face: &Face) -> Affine3A {
 }
 
 /// Turns the moving faces around the fold line and lifts them to their layer at the end.
-fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Query<(&FaceMesh, &mut Transform)>) {
+fn place(
+    session: Res<Session>,
+    mut placement: ResMut<Placement>,
+    mut faces: Query<(&mut FaceMesh, &mut Transform)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
     let paper = session.shown();
     let angle = session.angle();
     for (i, face) in paper.faces.iter().enumerate() {
@@ -276,10 +359,47 @@ fn place(session: Res<Session>, mut placement: ResMut<Placement>, mut faces: Que
             *slot = affine;
         }
     }
-    for (face, mut transform) in &mut faces {
-        if let Some(affine) = placement.faces.get(face.face) {
-            *transform = Transform::from_matrix(Mat4::from(*affine));
+    // Where stiff paper would tear, it bends.
+    placement.bent = match (session.plan(), &placement.sheet) {
+        (Some(plan), Some(sheet)) if session.t != 0.0 => plan.reverse.as_ref().map(|reverse| {
+            let pose = reverse.at(session.t as f64);
+            let faces = &plan.before.faces;
+            sheet.bend(&|i, u| {
+                let q = faces[i].pose.apply(u) - reverse.vertex;
+                pose.of(reverse.parts[i]) * DVec3::new(q.x, q.y, 0.0)
+            })
+        }),
+        _ => None,
+    };
+    for (mut face, mut transform) in &mut faces {
+        let Some(affine) = placement.faces.get(face.face) else {
+            continue;
+        };
+        *transform = Transform::from_matrix(Mat4::from(*affine));
+        let Some((front, back)) = face.sides.clone() else {
+            continue;
+        };
+        let bends = placement.bends(face.face);
+        if !bends && !face.bent {
+            continue;
         }
+        let (Some(sheet), i) = (&placement.sheet, face.face) else {
+            continue;
+        };
+        // The bend is in the world, the mesh in the face's own coordinates.
+        let to_local = affine.matrix3.inverse();
+        let (positions, normals) = bend_mesh(&sheet.faces[i], |p| match &placement.bent {
+            Some(bent) if bends => to_local * bent.at(sheet, i, p).as_vec3(),
+            _ => Vec3::ZERO,
+        });
+        for (handle, side) in [(front, 1.0), (back, -1.0)] {
+            if let Some(mut mesh) = meshes.get_mut(&handle) {
+                let normals: Vec<[f32; 3]> = normals.iter().map(|n| (*n * side).to_array()).collect();
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
+                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            }
+        }
+        face.bent = bends;
     }
 }
 
@@ -421,12 +541,30 @@ fn to_world(affine: &Affine3A, p: DVec2) -> Vec3 {
     affine.transform_point3(Vec3::new(p.x as f32, p.y as f32, 0.0))
 }
 
-/// A crease on both sides of its face: on the back, a mountain is a valley.
-fn both_sides(affine: &Affine3A, a: DVec2, b: DVec2, kind: FoldKind, mut draw: impl FnMut(Vec3, Vec3, FoldKind)) {
+/// A crease on both sides of its face: on the back, a mountain is a valley. On a face that bends,
+/// in pieces that follow it.
+fn both_sides(
+    placement: &Placement,
+    face: usize,
+    a: DVec2,
+    b: DVec2,
+    kind: FoldKind,
+    mut draw: impl FnMut(Vec3, Vec3, FoldKind),
+) {
+    let Some(affine) = placement.faces.get(face) else {
+        return;
+    };
     let normal = affine.transform_vector3(Vec3::Z) * LINE_LIFT;
-    let (pa, pb) = (to_world(affine, a), to_world(affine, b));
-    draw(pa + normal, pb + normal, kind);
-    draw(pa - normal, pb - normal, kind.opposite());
+    let pieces = if placement.bends(face) { 12 } else { 1 };
+    let at = |k: usize| {
+        let p = a.lerp(b, k as f64 / pieces as f64);
+        placement.point(face, p).unwrap_or_else(|| to_world(affine, p))
+    };
+    for k in 0..pieces {
+        let (pa, pb) = (at(k), at(k + 1));
+        draw(pa + normal, pb + normal, kind);
+        draw(pa - normal, pb - normal, kind.opposite());
+    }
 }
 
 fn draw_creases(
@@ -437,13 +575,10 @@ fn draw_creases(
 ) {
     let step = session.step;
     for (face, a, b, kind, made) in &marks.0 {
-        let Some(affine) = placement.faces.get(*face) else {
-            continue;
-        };
         // The last fold done reads best, the older ones fade.
         let age = step.saturating_sub(*made + 1) as f32;
         let alpha = (0.8 - 0.1 * age).max(0.4);
-        both_sides(affine, *a, *b, *kind, |p, q, kind| {
+        both_sides(&placement, *face, *a, *b, *kind, |p, q, kind| {
             gizmos.line(p, q, crease_on_paper(kind).with_alpha(alpha));
         });
     }
@@ -488,10 +623,7 @@ fn draw_fold_line(
     };
     let alpha = 0.7 + 0.3 * breath(&time, &settings);
     for chord in &plan.chords {
-        let Some(affine) = placement.faces.get(chord.face) else {
-            continue;
-        };
-        both_sides(affine, chord.a, chord.b, chord.kind, |p, q, kind| {
+        both_sides(&placement, chord.face, chord.a, chord.b, chord.kind, |p, q, kind| {
             let pattern: &[f32] = if kind == FoldKind::Valley {
                 &VALLEY_DASH
             } else {

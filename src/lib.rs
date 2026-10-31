@@ -2,6 +2,7 @@
 use bevy::feathers::FeathersPlugins;
 use bevy::prelude::*;
 
+pub mod bend;
 pub mod cp;
 pub mod cpview;
 pub mod cursor;

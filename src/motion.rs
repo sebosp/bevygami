@@ -48,6 +48,9 @@ pub struct Reverse {
     /// The opening of the layers at the start and at the end of the swing.
     open_start: f64,
     open_end: f64,
+    /// Stiff paper cannot do it: the layers next to the flap open a little, the spine swings,
+    /// the paper bends where it would tear, see [`crate::bend`].
+    pub bending: bool,
 }
 
 /// Where a reverse fold is at a time of its motion: the rotations of the four parts around the
@@ -74,6 +77,8 @@ impl Pose3 {
 const EPS: f64 = 1e-6;
 /// The layers may open a little past flat, `cos φ` down to this.
 const PAST_FLAT: f64 = -0.5;
+/// How far the layers open when the paper bends, the hands open them a little.
+const BENDING_OPEN: f64 = 0.7;
 
 fn perp(v: DVec2) -> DVec2 {
     DVec2::new(-v.y, v.x)
@@ -169,7 +174,7 @@ impl Reverse {
         let flap = cross(m0, centroid(&flap_faces)? - vertex).signum();
         let l = if cross(m0, d) * flap > 0.0 { d } else { -d };
         let sweep = 2.0 * m0.angle_to(l);
-        axes.into_iter().find_map(|s| {
+        let rigid = axes.into_iter().find_map(|s| {
             let parts = Self::open_around(n, &joints, moving, &flap_part, vertex, s)?;
             // The layers lift on the side of the ones joined to the front of the flap.
             let seeds: Vec<usize> = joints
@@ -185,6 +190,55 @@ impl Reverse {
                 return None;
             }
             Self::swing(parts, vertex, s, perp(s) * toward.signum(), l, m0, sweep)
+        });
+        rigid.or_else(|| {
+            // The layers joined to each half of the flap open with it, the rest stays.
+            let parts: Vec<Part> = (0..n)
+                .map(|i| {
+                    let by = |half: bool| Self::seeded(i, &joints, moving, front, half);
+                    match (moving[i], by(true), by(false)) {
+                        (true, _, _) => flap_part(i),
+                        (false, true, false) => Part::FrontStay,
+                        (false, false, true) => Part::BackStay,
+                        _ => Part::Still,
+                    }
+                })
+                .collect();
+            let s = -m0;
+            let seeds: Vec<usize> = (0..n).filter(|i| parts[*i] == Part::FrontStay).collect();
+            let toward = centroid(&seeds).map_or(flap, |c| cross(s, c - vertex).signum());
+            Some(Reverse {
+                parts,
+                vertex,
+                stay: s,
+                side: perp(s) * toward,
+                line: l,
+                spine: m0,
+                sweep,
+                open_start: 0.0,
+                open_end: 0.0,
+                bending: true,
+            })
+        })
+    }
+
+    /// `g` is joined to a face of the flap on the front half (`front`) or the back one.
+    fn seeded(
+        g: usize,
+        joints: &[(usize, usize, DVec2, DVec2)],
+        moving: &[bool],
+        front: &dyn Fn(usize) -> bool,
+        half: bool,
+    ) -> bool {
+        joints.iter().any(|(i, j, _, _)| {
+            let other = if *i == g {
+                *j
+            } else if *j == g {
+                *i
+            } else {
+                return false;
+            };
+            moving[other] && front(other) == half
         })
     }
 
@@ -258,6 +312,7 @@ impl Reverse {
             sweep,
             open_start: 0.0,
             open_end: 0.0,
+            bending: false,
         };
         // The opening along the swing, a little past flat at most.
         let steps = 64;
@@ -291,6 +346,16 @@ impl Reverse {
     /// The opening and the angle of the spine at `t` from 0 to 1: the layers open, the spine
     /// swings, they close, each for its share of the way.
     fn state(&self, t: f64) -> (f64, f64) {
+        if self.bending {
+            // The spine swings all along; the layers open as far as stiff paper needs, a little
+            // at most, and close at both ends.
+            let ease = |x: f64| x * x * (3.0 - 2.0 * x);
+            let t = t.clamp(0.0, 1.0);
+            let mu = self.sweep * ease(t);
+            let room = BENDING_OPEN * ease((4.0 * t).min(1.0)) * ease((4.0 * (1.0 - t)).min(1.0));
+            let need = self.cos_open(mu).map_or(room, |c| c.clamp(PAST_FLAT, 1.0).acos());
+            return (need.min(room), mu);
+        }
         let (open, swing, close) = (self.open_start, self.sweep.abs(), self.open_end);
         let total = open + swing + close;
         let x = t.clamp(0.0, 1.0) * total;
@@ -315,7 +380,9 @@ impl Reverse {
         let back_stay = DMat3::from_axis_angle(axis, -phi);
         let l = d3(self.line);
         let m = d3(rotate(self.spine, mu));
-        let front_flap = frame(front_stay * l, m) * frame(l, d3(self.spine)).transpose();
+        // The spine exact, the fold line as near as it goes: they are the same for stiff paper;
+        // when the paper bends, the short fold line across the flap bends, not its long spine.
+        let front_flap = frame(m, front_stay * l) * frame(d3(self.spine), l).transpose();
         // The back half is the front one seen in the mirror of the middle plane.
         let mirror = DMat3::from_diagonal(DVec3::new(1.0, 1.0, -1.0));
         let back_flap = mirror * front_flap * mirror;
@@ -345,7 +412,9 @@ mod tests {
             let folds = lesson.folds();
             let (plans, _) = plan_all(lesson.start(), &folds).expect("folds");
             for (k, plan) in plans.iter().enumerate() {
-                let Some(reverse) = &plan.reverse else { continue };
+                let Some(reverse) = plan.reverse.as_ref().filter(|r| !r.bending) else {
+                    continue;
+                };
                 rigid += 1;
                 let faces = &plan.before.faces;
                 for t in [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {

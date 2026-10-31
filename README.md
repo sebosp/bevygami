@@ -84,8 +84,14 @@ it lands, and the layers close. The halves of the flap are the upper and lower h
 layers (the crane's legs are eight layers in a zigzag, joined front to back along one spine), and
 the layers that open are found through the paper: those joined to the flap, and on wherever they
 are joined away from the line they open around; the rest does not move. A test checks every edge
-stays joined along the motion. The crane's tail and head still turn the halves of the flap on their
-own: with the neck reversed, stiff paper could only open the body by unfolding the neck again.
+stays joined along the motion.
+
+Where stiff paper cannot do it, the paper **bends** (`src/bend.rs`): the crane's tail and head,
+where opening the body flat would unfold the neck again. The layers next to the flap open a little
+(40° at most), the spine of the flap swings exactly, and wherever two faces the paper joins come
+apart, the edge goes to the middle of the two and the difference fades into each face: the paper
+flexes near the edge, as in the hands. The faces of those steps are meshed finely with the same
+points on both sides of every edge, so nothing tears; a test checks it.
 
 A **collapse** folds several creases at once, as the CP editors fold a crease pattern (the petal
 folds of the bird base, the leg narrowings of the crane): the step lists the creases that fold
