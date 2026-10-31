@@ -122,6 +122,11 @@ impl Face {
     pub fn centroid(&self) -> DVec2 {
         self.poly.iter().copied().sum::<DVec2>() / self.poly.len() as f64
     }
+
+    /// The centroid on the folded plane.
+    pub fn centroid_image(&self) -> DVec2 {
+        self.pose.apply(self.centroid())
+    }
 }
 
 /// A crease of the paper, a segment in paper coordinates.
@@ -879,17 +884,19 @@ fn overlap(f: &[DVec2], g: &[DVec2]) -> bool {
     true
 }
 
-/// The stacking order of a folded state, as the CP editors find it from the crease pattern: two
-/// faces on both sides of a folded crease face each other with their front sides across a valley
-/// (back sides across a mountain), faces that moved together keep their order (reversed when
-/// turned over); `hint` orders the rest.
-/// Returns the layers, 0 at the bottom.
+/// The stacking order of a folded state, as the CP editors find it from the crease pattern, see
+/// [`crate::layers`]: two faces on both sides of a folded crease face each other with their front
+/// sides across a valley (back sides across a mountain), the faces that do not move keep their
+/// order, so do faces that moved together in one piece (reversed when turned over); `hint` orders
+/// the rest. Returns the layers, 0 at the bottom.
 fn stack(before: &Paper, after: &[Face], kinds: &dyn Fn(DVec2, DVec2) -> Option<FoldKind>, hint: &[i32]) -> Vec<i32> {
+    use crate::layers::{Problem, ccw, clip, through};
     let n = after.len();
-    let images: Vec<Vec<DVec2>> = after.iter().map(|f| f.image()).collect();
+    let images: Vec<Vec<DVec2>> = after.iter().map(|f| ccw(&f.image())).collect();
     let overlaps: Vec<Vec<bool>> = (0..n)
         .map(|i| (0..n).map(|j| i != j && overlap(&images[i], &images[j])).collect())
         .collect();
+    let before_images: Vec<Vec<DVec2>> = before.faces.iter().map(|f| ccw(&f.image())).collect();
     // The faces that moved together, joined through the paper: one rigid piece each.
     let delta: Vec<Pose> = (0..n)
         .map(|i| before.faces[i].pose.inverse().then(&after[i].pose))
@@ -910,47 +917,150 @@ fn stack(before: &Paper, after: &[Face], kinds: &dyn Fn(DVec2, DVec2) -> Option<
             }
         }
     }
-    // above[i][j]: i is over j.
-    let mut above = vec![vec![false; n]; n];
-    let set = |above: &mut Vec<Vec<bool>>, i: usize, j: usize| {
-        if !above[j][i] {
-            above[i][j] = true;
-        }
-    };
+    let mut problem = Problem::new(&overlaps);
+    // The folded edges and the flat joints: the two faces and the edge on the folded plane.
+    let mut edges: Vec<(usize, usize, DVec2, DVec2)> = Vec::new();
+    let mut joints: Vec<(usize, usize, DVec2, DVec2)> = Vec::new();
     for i in 0..n {
-        for j in 0..n {
-            if !overlaps[i][j] {
-                continue;
-            }
+        for j in i + 1..n {
             let (f, g) = (&after[i], &after[j]);
-            // Across a folded crease.
-            if !f.pose.close_to(&g.pose) {
-                for (p, q) in shared_edges(f, g) {
-                    if let Some(kind) = kinds(p, q) {
-                        let front_up = !f.pose.flipped();
-                        let g_over = (kind == FoldKind::Valley) == front_up;
-                        if g_over {
-                            set(&mut above, j, i)
-                        } else {
-                            set(&mut above, i, j)
-                        }
-                    }
+            let flat = f.pose.close_to(&g.pose);
+            for (p, q) in shared_edges(f, g) {
+                let (a, b) = (f.pose.apply(p), f.pose.apply(q));
+                if flat {
+                    joints.push((i, j, a, b));
+                    continue;
                 }
-            }
-            // Moved together, in one piece; their old order only means something where they
-            // already overlapped.
-            let delta_f = delta[i];
-            if piece[i] == piece[j] && overlap(&before.faces[i].image(), &before.faces[j].image()) {
-                let was_over = before.faces[i].layer > before.faces[j].layer;
-                let turned = delta_f.m.determinant() < 0.0;
-                if before.faces[i].layer != before.faces[j].layer && was_over != turned {
-                    set(&mut above, i, j);
+                edges.push((i, j, a, b));
+                if !overlaps[i][j] {
+                    continue;
+                }
+                if let Some(kind) = kinds(p, q) {
+                    let front_up = !f.pose.flipped();
+                    if (kind == FoldKind::Valley) == front_up {
+                        problem.require_over(j, i);
+                    } else {
+                        problem.require_over(i, j);
+                    }
                 }
             }
         }
     }
+    let identity = Pose::IDENTITY;
+    for i in 0..n {
+        for j in 0..n {
+            if !overlaps[i][j] || before.faces[i].layer <= before.faces[j].layer {
+                continue;
+            }
+            // Their old order only means something where they already overlapped.
+            if !overlap(&before_images[i], &before_images[j]) {
+                continue;
+            }
+            let still = delta[i].close_to(&identity) && delta[j].close_to(&identity);
+            if still || piece[i] == piece[j] {
+                if delta[i].m.determinant() < 0.0 {
+                    problem.require_over(j, i);
+                } else {
+                    problem.require_over(i, j);
+                }
+            }
+        }
+    }
+    // Transitivity where three faces share a region.
+    for i in 0..n {
+        for j in i + 1..n {
+            if !overlaps[i][j] {
+                continue;
+            }
+            let ij = clip(&images[i], &images[j]);
+            for k in j + 1..n {
+                if overlaps[i][k] && overlaps[j][k] && area(&clip(&ij, &images[k])) > 1e-9 {
+                    problem.transitive(i, j, k);
+                }
+            }
+        }
+    }
+    // Taco-tortilla: a face across a folded edge; a face across a flat joint.
+    for (f, g, a, b) in edges.iter().chain(&joints) {
+        for (h, image) in images.iter().enumerate() {
+            if h != *f && h != *g && through(image, *a, *b) {
+                problem.not_between(h, *f, *g);
+            }
+        }
+    }
+    // Along one line: two folds on the same side (taco-taco), a joint and a fold (taco-tortilla),
+    // two joints (tortilla-tortilla).
+    let side = |f: usize, a: DVec2, b: DVec2| cross(b - a, after[f].centroid_image() - a) > 0.0;
+    let along = |(a1, b1): (DVec2, DVec2), (a2, b2): (DVec2, DVec2)| {
+        let d = (b1 - a1).normalize_or_zero();
+        if cross(d, a2 - a1).abs() > 1e-7 || cross(d, b2 - a1).abs() > 1e-7 {
+            return false;
+        }
+        let (s2, t2) = ((a2 - a1).dot(d), (b2 - a1).dot(d));
+        let (lo, hi) = (s2.min(t2).max(0.0), s2.max(t2).min((b1 - a1).dot(d)));
+        hi - lo > 1e-6
+    };
+    for (e, (f1, g1, a1, b1)) in edges.iter().enumerate() {
+        for (f2, g2, a2, b2) in &edges[e + 1..] {
+            if [f2, g2].iter().any(|x| *x == f1 || *x == g1) {
+                continue;
+            }
+            if along((*a1, *b1), (*a2, *b2)) && side(*f1, *a1, *b1) == side(*f2, *a1, *b1) {
+                problem.not_interleaved((*f1, *g1), (*f2, *g2));
+            }
+        }
+        for (h, k, a2, b2) in &joints {
+            if along((*a1, *b1), (*a2, *b2)) {
+                let near = if side(*h, *a1, *b1) == side(*f1, *a1, *b1) {
+                    *h
+                } else {
+                    *k
+                };
+                if near != *f1 && near != *g1 {
+                    problem.not_between(near, *f1, *g1);
+                }
+            }
+        }
+    }
+    for (e, (f1, g1, a1, b1)) in joints.iter().enumerate() {
+        for (f2, g2, a2, b2) in &joints[e + 1..] {
+            if [f2, g2].iter().any(|x| *x == f1 || *x == g1) || !along((*a1, *b1), (*a2, *b2)) {
+                continue;
+            }
+            // f2 on the side of f1.
+            let (f2, g2) = if side(*f2, *a1, *b1) == side(*f1, *a1, *b1) {
+                (*f2, *g2)
+            } else {
+                (*g2, *f2)
+            };
+            problem.same_order((*f1, f2), (*g1, g2));
+        }
+    }
+    // Where nothing decides: a face that moves keeps its old order with one that stays, the order
+    // of their layers even where they did not overlap (it moves in front of the paper or behind,
+    // or slides into a pocket between two layers, never through them); the folding motion orders
+    // the rest.
+    let moves: Vec<bool> = delta.iter().map(|d| !d.close_to(&identity)).collect();
+    let prefer = |i: usize, j: usize| {
+        let (fi, fj) = (&before.faces[i], &before.faces[j]);
+        if moves[i] != moves[j] && fi.layer != fj.layer {
+            fi.layer > fj.layer
+        } else {
+            hint[i] >= hint[j]
+        }
+    };
+    let Some(above) = problem.solve(&prefer) else {
+        log::warn!("layers: no order found, the folding motion decides");
+        let mut layers: Vec<(usize, i32)> = hint.iter().copied().enumerate().collect();
+        layers.sort_by_key(|(_, h)| *h);
+        let mut out = vec![0; n];
+        for (layer, (i, _)) in layers.into_iter().enumerate() {
+            out[i] = layer as i32;
+        }
+        return out;
+    };
     // Bottom up: a face goes once every face it is over is placed; the hint picks among the
-    // ready ones, and breaks a cycle.
+    // ready ones, and breaks a cycle (faces over each other in different places).
     let mut placed = vec![false; n];
     let mut layers = vec![0; n];
     for layer in 0..n {

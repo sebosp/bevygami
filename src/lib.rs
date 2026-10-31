@@ -5,6 +5,7 @@ use bevy::prelude::*;
 pub mod cp;
 pub mod cpview;
 pub mod fold;
+pub mod layers;
 pub mod lessons;
 pub mod paper;
 pub mod session;
