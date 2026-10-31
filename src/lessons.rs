@@ -58,6 +58,18 @@ impl Lesson {
         }
     }
 
+    /// What to do at a step; the first one says which side of the sheet is up.
+    pub fn instruction(&self, step: usize) -> Option<String> {
+        let text = self.steps.get(step)?.text;
+        Some(if step > 0 {
+            text.to_string()
+        } else if self.colored_up {
+            format!("Start with the colored side up. {text}")
+        } else {
+            format!("Start with the white side up, the colored side on the table. {text}")
+        })
+    }
+
     /// The folds on the sheet as it lies: mirrored with it, they look the same.
     pub fn folds(&self) -> Vec<Fold> {
         self.steps
@@ -475,7 +487,7 @@ fn bird_base() -> Lesson {
     steps.push(step(Fold::turn_over(), "Turn it back over."));
     Lesson {
         title: "11. The bird base",
-        about: "Kite creases and petal folds on both sides of the preliminary base: the base of the crane, the flapping bird and many more.",
+        about: "Kite creases and petal folds on both sides of the preliminary base: the base of the crane, the flapping bird and many more. Started colored side up, the preliminary base is white outside; the petal folds turn its colored inside out.",
         diamond: true,
         colored_up: true,
         steps,
@@ -608,7 +620,7 @@ fn crane() -> Lesson {
     ));
     Lesson {
         title: "12. The crane",
-        about: "The orizuru, the traditional crane: the bird base, narrowed legs reversed into a neck and a tail, a head, the wings down.",
+        about: "The orizuru, the traditional crane: the bird base, narrowed legs reversed into a neck and a tail, a head, the wings down. Colored side up at the start, so the crane ends colored.",
         diamond: true,
         colored_up: true,
         steps,

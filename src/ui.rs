@@ -832,10 +832,9 @@ fn update_texts(
     *shown = Some((session.generation, session.lesson));
     let lesson = session.current();
     let n = session.plans.len();
-    let instruction = match lesson.steps.get(session.step) {
-        Some(step) => step.text.to_string(),
-        None => format!("Done! {}", lesson.done),
-    };
+    let instruction = lesson
+        .instruction(session.step)
+        .unwrap_or_else(|| format!("Done! {}", lesson.done));
     let label = if session.finished() {
         format!("Done, {n} steps")
     } else {
